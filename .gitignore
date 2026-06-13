@@ -1,0 +1,15 @@
+__pycache__/
+.pytest_cache/
+.venv/
+instance/
+*.pyc
+*.db
+*.sqlite3
+.env
+# Google OAuth client secrets — never commit these
+client_secret*.json
+# HAR network captures
+*.har
+# OS
+.DS_Store
+Thumbs.db

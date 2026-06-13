@@ -1,0 +1,372 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <meta name="description" content="Sync your SPJIMR TCS iON timetable to Google Calendar automatically.">
+  <title>Class Sync — SPJIMR Timetable</title>
+  <link rel="stylesheet" href="{{ url_for('static', filename='styles.css') }}">
+</head>
+<body>
+
+  <!-- ── Loading overlay ───────────────────────────────────── -->
+  <div id="loadingOverlay">
+    <div class="spinner"></div>
+    <p class="spinner-text" id="spinnerText">Please wait…</p>
+  </div>
+
+  <!-- ── Toast messages ────────────────────────────────────── -->
+  {% with messages = get_flashed_messages(with_categories=true) %}
+    {% if messages %}
+      <div id="toasts">
+        {% for category, message in messages %}
+          <div class="toast {{ category }}">
+            <span class="toast-icon">
+              {%- if category == 'success' -%}✓
+              {%- elif category == 'error' -%}✕
+              {%- elif category == 'warning' -%}⚠
+              {%- else -%}ℹ
+              {%- endif -%}
+            </span>
+            <span>{{ message }}</span>
+          </div>
+        {% endfor %}
+      </div>
+    {% endif %}
+  {% endwith %}
+
+  <div class="page">
+
+    <!-- ── Topbar ───────────────────────────────────────────── -->
+    <header class="topbar">
+      <div class="brand">
+        <div class="brand-logo">CS</div>
+        <div>
+          <div class="brand-name">Class Sync</div>
+          <div class="brand-sub">SPJIMR · TCS iON → Google Calendar</div>
+        </div>
+      </div>
+      <div class="top-badges">
+        <span class="badge {{ 'ok' if tcs_ready else '' }}">
+          <span class="dot"></span>
+          {% if tcs_ready and username %}
+            {{ username }}
+          {% elif tcs_ready %}
+            TCS iON Connected
+          {% else %}
+            Not signed in
+          {% endif %}
+        </span>
+        {% if google_ready %}
+          <span class="badge ok">
+            <span class="dot"></span>
+            Google Calendar
+          </span>
+        {% endif %}
+        {% if sample_mode %}
+          <span class="badge" style="border-color:rgba(245,158,11,.35);color:#fbbf24;background:rgba(245,158,11,.08)">
+            ⚠ Sample mode
+          </span>
+        {% endif %}
+      </div>
+    </header>
+
+    <!-- ── Step indicator ──────────────────────────────────── -->
+    <nav class="steps" aria-label="Setup progress">
+      <div class="step {{ 'done' if tcs_ready else 'active' }}">
+        <div class="step-num" aria-label="Step 1">
+          {% if tcs_ready %}✓{% else %}1{% endif %}
+        </div>
+        <span class="step-label">TCS iON Login</span>
+      </div>
+      <div class="step-bar"></div>
+      <div class="step {{ 'done' if (events and google_ready) else ('active' if (tcs_ready and events) else '') }}">
+        <div class="step-num" aria-label="Step 2">
+          {% if events and google_ready %}✓{% else %}2{% endif %}
+        </div>
+        <span class="step-label">Timetable Preview</span>
+      </div>
+      <div class="step-bar"></div>
+      <div class="step {{ 'done' if synced else ('active' if events else '') }}">
+        <div class="step-num" aria-label="Step 3">
+          {% if synced %}✓{% else %}3{% endif %}
+        </div>
+        <span class="step-label">Google Calendar Sync</span>
+      </div>
+    </nav>
+
+    {# ═══════════════════════════════════════════════════════════
+       STEP 1 — Login
+    ═══════════════════════════════════════════════════════════ #}
+    {% if not tcs_ready %}
+
+      <div class="login-layout">
+
+        <!-- Hero copy -->
+        <div class="login-hero">
+          <p class="overline">Step 1 of 3</p>
+          <h1 class="login-headline">Your classes,<br>in your calendar.</h1>
+          <p class="login-desc">
+            Sign in with your SPJIMR TCS iON account. Class Sync fetches your
+            personal schedule securely in the background and syncs it to Google
+            Calendar with one click.
+          </p>
+          <ul class="feature-list">
+            <li>Encrypted credential storage — never plain text</li>
+            <li>Next 2 weeks of scheduled sessions</li>
+            <li>One-click Google Calendar sync</li>
+            <li>Automatic weekly refresh</li>
+          </ul>
+        </div>
+
+        <!-- Login card -->
+        <div class="card">
+          <h2 class="login-card-title">Sign in with TCS iON</h2>
+          <p class="login-card-desc">
+            Use your SPJIMR email (<em>name@spjimr.org</em>) and TCS iON password.
+          </p>
+          <form
+            id="loginForm"
+            method="post"
+            action="{{ url_for('tcs_login') }}"
+            onsubmit="startLoading(this, 'Signing into TCS iON…')"
+          >
+            <div class="form-field">
+              <label for="username">SPJIMR Email</label>
+              <input
+                id="username"
+                name="username"
+                type="email"
+                autocomplete="username"
+                placeholder="yourname@spjimr.org"
+                required
+              >
+            </div>
+            <div class="form-field">
+              <label for="password">Password</label>
+              <div class="password-field">
+                <input
+                  id="password"
+                  name="password"
+                  type="password"
+                  autocomplete="current-password"
+                  placeholder="Your TCS iON password"
+                  required
+                >
+                <button
+                  type="button"
+                  class="eye-toggle"
+                  id="eyeToggle"
+                  aria-label="Show password"
+                  onclick="togglePassword()"
+                >
+                  <!-- Eye-open icon (shown when password is hidden) -->
+                  <svg id="eyeOpen" xmlns="http://www.w3.org/2000/svg" width="18" height="18"
+                    viewBox="0 0 24 24" fill="none" stroke="currentColor"
+                    stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+                    <path d="M1 12s4-8 11-8 11 8 11 8-4 8-11 8-11-8-11-8z"/>
+                    <circle cx="12" cy="12" r="3"/>
+                  </svg>
+                  <!-- Eye-off icon (shown when password is visible) -->
+                  <svg id="eyeOff" xmlns="http://www.w3.org/2000/svg" width="18" height="18"
+                    viewBox="0 0 24 24" fill="none" stroke="currentColor"
+                    stroke-width="2" stroke-linecap="round" stroke-linejoin="round"
+                    style="display:none">
+                    <path d="M17.94 17.94A10.07 10.07 0 0 1 12 20c-7 0-11-8-11-8a18.45 18.45 0 0 1 5.06-5.94M9.9 4.24A9.12 9.12 0 0 1 12 4c7 0 11 8 11 8a18.5 18.5 0 0 1-2.16 3.19m-6.72-1.07a3 3 0 1 1-4.24-4.24"/>
+                    <line x1="1" y1="1" x2="23" y2="23"/>
+                  </svg>
+                </button>
+              </div>
+            </div>
+            <div class="form-actions">
+              <button type="submit" class="btn btn-primary" id="loginBtn">
+                <span class="btn-label">Fetch My Timetable →</span>
+              </button>
+            </div>
+          </form>
+          <p class="security-note">🔒 Credentials are encrypted at rest and never shared.</p>
+        </div>
+
+      </div>
+
+    {# ═══════════════════════════════════════════════════════════
+       STEPS 2 & 3 — Dashboard
+    ═══════════════════════════════════════════════════════════ #}
+    {% else %}
+
+      <!-- Dashboard header -->
+      <div class="dash-header">
+        <div>
+          <h1 class="dash-title">Your Timetable</h1>
+          <p class="dash-sub">
+            {{ events | length }} event{{ 's' if events | length != 1 else '' }} · next 2 weeks
+          </p>
+        </div>
+        <div class="dash-actions">
+          <form method="post" action="{{ url_for('preview') }}" onsubmit="startLoading(this, 'Refreshing timetable…')">
+            <button type="submit" class="btn btn-ghost" id="refreshBtn">
+              <span class="btn-label">↻ Refresh</span>
+            </button>
+          </form>
+          <form method="post" action="{{ url_for('tcs_reset') }}"
+                onsubmit="return confirm('Sign out and clear your session?')">
+            <button type="submit" class="btn btn-danger btn-sm">Sign out</button>
+          </form>
+        </div>
+      </div>
+
+      <!-- Sync banner -->
+      {% if events %}
+        {% if synced %}
+          <div class="sync-banner done" role="status">
+            <div class="sync-banner-info">
+              <strong>Calendar synced ✓</strong>
+              <span>Your classes are live in Google Calendar. Refresh to push updates.</span>
+            </div>
+            <div class="synced-pill">✓ Synced</div>
+          </div>
+        {% else %}
+          {# ── Sync with Google Calendar banner ─────────────────────────────── #}
+          <div class="sync-banner" role="complementary">
+            <div class="sync-banner-info">
+              <strong>Ready to sync with Google Calendar</strong>
+              <span>{{ events | length }} events will be added to your personal Google Calendar.</span>
+            </div>
+            <form method="post" action="{{ url_for('sync') }}"
+                  onsubmit="startLoading(this, 'Redirecting to Google sign-in…')">
+              <button type="submit" class="btn btn-google" id="syncBtn">
+                <svg width="18" height="18" viewBox="0 0 24 24" fill="none" aria-hidden="true">
+                  <path d="M22.56 12.25c0-.78-.07-1.53-.2-2.25H12v4.26h5.92c-.26 1.37-1.04 2.53-2.21 3.31v2.77h3.57c2.08-1.92 3.28-4.74 3.28-8.09z" fill="#4285F4"/>
+                  <path d="M12 23c2.97 0 5.46-.98 7.28-2.66l-3.57-2.77c-.98.66-2.23 1.06-3.71 1.06-2.86 0-5.29-1.93-6.16-4.53H2.18v2.84C3.99 20.53 7.7 23 12 23z" fill="#34A853"/>
+                  <path d="M5.84 14.09c-.22-.66-.35-1.36-.35-2.09s.13-1.43.35-2.09V7.07H2.18C1.43 8.55 1 10.22 1 12s.43 3.45 1.18 4.93l3.66-2.84z" fill="#FBBC05"/>
+                  <path d="M12 5.38c1.62 0 3.06.56 4.21 1.64l3.15-3.15C17.45 2.09 14.97 1 12 1 7.7 1 3.99 3.47 2.18 7.07l3.66 2.84c.87-2.6 3.3-4.53 6.16-4.53z" fill="#EA4335"/>
+                </svg>
+                <span class="btn-label">Sign in with Google &amp; Sync Calendar</span>
+              </button>
+            </form>
+          </div>
+        {% endif %}
+      {% endif %}
+
+
+
+      <!-- Timetable -->
+      {% if event_groups %}
+        <div class="timetable">
+          {% set chip_colors = [
+            '#22d3ee','#3b82f6','#8b5cf6','#10b981',
+            '#f59e0b','#ec4899','#14b8a6','#f97316'
+          ] %}
+          {% for group in event_groups %}
+            <section class="day-group" aria-label="{{ group.label }}">
+              <div class="day-heading {{ 'is-today' if group.is_today else '' }}">
+                <time datetime="{{ group.date }}">{{ group.label }}</time>
+              </div>
+              <div class="events-grid">
+                {% for event in group.events %}
+                  {# Pick a stable colour index based on subject name length + code length #}
+                  {% set cidx = ((event.title | length) + (event.course_code | length)) % (chip_colors | length) %}
+                  <article class="event-card" style="--chip: {{ chip_colors[cidx] }}">
+                    <div class="event-time">
+                      {{ event.starts_at[11:16] }} – {{ event.ends_at[11:16] }}
+                    </div>
+                    <div class="event-title">{{ event.title }}</div>
+                    <div class="event-meta">
+                      {% if event.faculty %}
+                        <div class="meta-row">
+                          <span class="meta-key">Faculty</span>
+                          <span class="meta-val">{{ event.faculty }}</span>
+                        </div>
+                      {% endif %}
+                      {% if event.course_code %}
+                        <div class="meta-row">
+                          <span class="meta-key">Code</span>
+                          <span class="meta-val">{{ event.course_code }}</span>
+                        </div>
+                      {% endif %}
+                      {% if event.classroom %}
+                        <div class="meta-row">
+                          <span class="meta-key">Room</span>
+                          <span class="meta-val">{{ event.classroom }}</span>
+                        </div>
+                      {% endif %}
+                    </div>
+                  </article>
+                {% endfor %}
+              </div>
+            </section>
+          {% endfor %}
+        </div>
+
+      {% else %}
+        <div class="empty" role="status">
+          <div class="empty-icon">📅</div>
+          <h2>No classes in the next 2 weeks</h2>
+          <p>Your TCS iON timetable shows no scheduled sessions for this period.</p>
+        </div>
+      {% endif %}
+
+      <!-- Admin strip -->
+      {% if admin_enabled %}
+        <div class="admin-strip" aria-label="Admin controls">
+          <p class="admin-label">⚙ Admin</p>
+          <form method="post" action="{{ url_for('admin_refresh') }}"
+                onsubmit="startLoading(this, 'Running admin refresh…')">
+            <div class="admin-row">
+              <div class="form-field">
+                <label for="admin_token">Admin Token</label>
+                <input
+                  id="admin_token"
+                  name="admin_token"
+                  type="password"
+                  autocomplete="off"
+                  placeholder="Enter admin token"
+                >
+              </div>
+              <button type="submit" class="btn btn-ghost btn-sm">Run Refresh</button>
+            </div>
+          </form>
+        </div>
+      {% endif %}
+
+    {% endif %}
+    <!-- end steps -->
+
+  </div><!-- .page -->
+
+  <script>
+    /* ── Password show / hide ──────────────────────────────── */
+    function togglePassword() {
+      var input   = document.getElementById('password');
+      var eyeOpen = document.getElementById('eyeOpen');
+      var eyeOff  = document.getElementById('eyeOff');
+      var btn     = document.getElementById('eyeToggle');
+      var show    = input.type === 'password';
+      input.type          = show ? 'text'    : 'password';
+      eyeOpen.style.display = show ? 'none'  : '';
+      eyeOff.style.display  = show ? ''      : 'none';
+      btn.setAttribute('aria-label', show ? 'Hide password' : 'Show password');
+    }
+
+    /* ── Loading overlay ───────────────────────────────────── */
+    function startLoading(form, msg) {
+      var overlay = document.getElementById('loadingOverlay');
+      document.getElementById('spinnerText').textContent = msg || 'Please wait…';
+      overlay.classList.add('on');
+      var btn = form.querySelector('button[type="submit"]');
+      if (btn) btn.classList.add('is-loading');
+    }
+
+    /* ── Auto-dismiss toasts ───────────────────────────────── */
+    document.querySelectorAll('.toast').forEach(function(t, i) {
+      setTimeout(function() {
+        t.style.transition = '0.45s ease';
+        t.style.opacity = '0';
+        t.style.transform = 'translateX(115%)';
+        setTimeout(function() { t.remove(); }, 450);
+      }, 4500 + i * 600);
+    });
+  </script>
+
+</body>
+</html>
