@@ -24,17 +24,27 @@ from .scheduler import WeeklyScheduler
 from .security import decrypt_json, encrypt_json
 from .store import (
     clear_events,
+    clear_mandatory_sessions,
     database_path,
     delete_setting,
     get_all_users_with_credentials,
+    get_mandatory_sessions,
     get_setting,
     init_db,
     list_event_payloads,
     mark_many_synced,
     save_events,
+    save_mandatory_sessions,
     set_setting,
 )
-from .tcs import TcsClient, TcsError, next_two_weeks, parse_tcs_attendance, serialize_events
+from .tcs import (
+    TcsClient,
+    TcsError,
+    apply_mandatory_flags,
+    next_two_weeks,
+    parse_tcs_attendance,
+    serialize_events,
+)
 
 
 def create_app(test_config: dict | None = None) -> Flask:
@@ -80,6 +90,8 @@ def create_app(test_config: dict | None = None) -> Flask:
         events_raw: list[dict] = get_setting(db, tok, "preview_events", [])  # type: ignore[assignment]
         google_ready = bool(get_setting(db, tok, "google_credentials", None))
         tcs_ready = bool(get_setting(db, tok, "tcs_credentials_encrypted", None))
+        wisenet_ready = bool(get_setting(db, tok, "wisenet_credentials_encrypted", None))
+        mandatory_data = get_mandatory_sessions(db, tok) if wisenet_ready else {}
         synced = bool(
             google_ready
             and any(e.get("synced_event_id") for e in list_event_payloads(db, tok))
@@ -100,6 +112,8 @@ def create_app(test_config: dict | None = None) -> Flask:
             google_ready=google_ready,
             google_configured=app.config["GOOGLE_CONFIGURED"],
             tcs_ready=tcs_ready,
+            wisenet_ready=wisenet_ready,
+            mandatory_data=mandatory_data,
             synced=synced,
             username=username,
             sample_mode=app.config["USE_SAMPLE_TCS"],
@@ -119,7 +133,7 @@ def create_app(test_config: dict | None = None) -> Flask:
             return redirect(url_for("index"))
         credentials = {"username": username, "password": password}
         try:
-            events = _fetch_timetable(app, credentials)
+            events = _fetch_timetable(app, credentials, tok)
         except TcsError as exc:
             flash(str(exc), "error")
             return redirect(url_for("index"))
@@ -140,8 +154,66 @@ def create_app(test_config: dict | None = None) -> Flask:
         delete_setting(db, tok, "tcs_credentials_encrypted")
         delete_setting(db, tok, "preview_events")
         delete_setting(db, tok, "google_credentials")
+        delete_setting(db, tok, "wisenet_credentials_encrypted")
         clear_events(db, tok)
+        clear_mandatory_sessions(db, tok)
         flash("Session cleared. Enter your TCS iON credentials to start over.", "info")
+        return redirect(url_for("index"))
+
+    # ── Wisenet (Moodle LMS) routes ───────────────────────────────────────────
+
+    @app.post("/wisenet/login")
+    def wisenet_login():
+        """Store Wisenet Google credentials and kick off mandatory session scrape."""
+        tok = _user_token()
+        email = request.form.get("wisenet_email", "").strip()
+        password = request.form.get("wisenet_password", "")
+        if not email or not password:
+            flash("Please enter your SPJIMR email and password for Wisenet.", "error")
+            return redirect(url_for("index"))
+        db = app.config["DATABASE"]
+        creds = {"email": email, "password": password}
+        set_setting(db, tok, "wisenet_credentials_encrypted", encrypt_json(creds))
+        # Immediately trigger a scrape
+        return redirect(url_for("wisenet_sync"))
+
+    @app.post("/wisenet/sync")
+    @app.get("/wisenet/sync")
+    def wisenet_sync():
+        """Scrape Wisenet for mandatory sessions and re-apply flags to timetable."""
+        tok = _user_token()
+        db = app.config["DATABASE"]
+        encrypted = get_setting(db, tok, "wisenet_credentials_encrypted", None)
+        if not encrypted:
+            flash("Connect to Wisenet first.", "error")
+            return redirect(url_for("index"))
+        creds = decrypt_json(encrypted)
+        if not creds:
+            flash("Wisenet credentials could not be decrypted.", "error")
+            return redirect(url_for("index"))
+        try:
+            mandatory_data = _fetch_wisenet_mandatory_sessions(creds)
+        except Exception as exc:
+            flash(f"Wisenet scrape failed: {exc}", "error")
+            return redirect(url_for("index"))
+        save_mandatory_sessions(db, tok, mandatory_data)
+        # Re-apply mandatory flags to existing timetable events
+        _reapply_mandatory_flags(app, tok, mandatory_data)
+        total = sum(len(v) for v in mandatory_data.values())
+        flash(
+            f"Wisenet sync done — {len(mandatory_data)} courses scanned, "
+            f"{total} mandatory sessions marked in red.",
+            "success",
+        )
+        return redirect(url_for("index"))
+
+    @app.post("/wisenet/reset")
+    def wisenet_reset():
+        tok = _user_token()
+        db = app.config["DATABASE"]
+        delete_setting(db, tok, "wisenet_credentials_encrypted")
+        clear_mandatory_sessions(db, tok)
+        flash("Wisenet session cleared.", "info")
         return redirect(url_for("index"))
 
     @app.post("/preview")
@@ -153,7 +225,7 @@ def create_app(test_config: dict | None = None) -> Flask:
             flash("Add your TCS iON credentials first.", "error")
             return redirect(url_for("index"))
         try:
-            events = _fetch_timetable(app, credentials)
+            events = _fetch_timetable(app, credentials, tok)
         except TcsError as exc:
             flash(str(exc), "error")
             return redirect(url_for("index"))
@@ -234,7 +306,7 @@ def create_app(test_config: dict | None = None) -> Flask:
             flash("Cannot refresh until TCS credentials are saved.", "error")
             return redirect(url_for("index"))
         db = app.config["DATABASE"]
-        events = _fetch_timetable(app, credentials)
+        events = _fetch_timetable(app, credentials, tok)
         set_setting(db, tok, "preview_events", serialize_events(events))
         save_events(db, tok, events)
         result = _sync_calendar(app, tok)
@@ -256,7 +328,7 @@ def create_app(test_config: dict | None = None) -> Flask:
                     credentials = _stored_tcs_credentials(app, tok)
                     if not credentials:
                         continue
-                    events = _fetch_timetable(app, credentials)
+                    events = _fetch_timetable(app, credentials, tok)
                     set_setting(db, tok, "preview_events", serialize_events(events))
                     save_events(db, tok, events)
                     _sync_calendar(app, tok)
@@ -271,21 +343,28 @@ def create_app(test_config: dict | None = None) -> Flask:
 
 # ── Private helpers ────────────────────────────────────────────────────────────
 
-def _fetch_timetable(app: Flask, credentials: dict) -> list:
+def _fetch_timetable(app: Flask, credentials: dict, user_token: str | None = None) -> list:
     if app.config.get("USE_SAMPLE_TCS", False):
         sample_path = Path(app.config["SAMPLE_ATTENDANCE_PATH"])
         if not sample_path.exists():
             raise TcsError("No local TCS sample file found.")
-        return next_two_weeks(
+        events = next_two_weeks(
             parse_tcs_attendance(sample_path.read_text(encoding="utf-8")),
             now=_sync_window_now(app),
         )
-    now = _sync_window_now(app)
-    client = TcsClient()
-    return next_two_weeks(
-        client.fetch_timetable(credentials["username"], credentials["password"], now=now),
-        now=now,
-    )
+    else:
+        now = _sync_window_now(app)
+        client = TcsClient()
+        events = next_two_weeks(
+            client.fetch_timetable(credentials["username"], credentials["password"], now=now),
+            now=now,
+        )
+    # Apply mandatory flags if Wisenet data is available
+    if user_token:
+        mandatory_data = get_mandatory_sessions(app.config["DATABASE"], user_token)
+        if mandatory_data:
+            events = apply_mandatory_flags(events, mandatory_data)
+    return events
 
 
 def _sync_calendar(app: Flask, user_token: str):
@@ -344,6 +423,46 @@ def _group_events(events: list[dict]) -> list[dict]:
             }
         )
     return groups
+
+
+def _fetch_wisenet_mandatory_sessions(creds: dict) -> dict[str, list[int]]:
+    """Log into Wisenet via Playwright and scrape mandatory sessions from all courses."""
+    from .wisenet import login_and_build_client
+    client = login_and_build_client(creds["email"], creds["password"])
+    return client.get_all_mandatory_sessions()
+
+
+def _reapply_mandatory_flags(
+    app: Flask,
+    user_token: str,
+    mandatory_data: dict[str, list[int]],
+) -> None:
+    """Re-flag any stored timetable events as mandatory and re-save."""
+    db = app.config["DATABASE"]
+    events_raw: list[dict] = get_setting(db, user_token, "preview_events", [])  # type: ignore
+    if not events_raw:
+        return
+    # We need to deserialise, re-apply flags, re-serialise
+    from .models import TimetableEvent
+    from datetime import datetime as _DT
+    updated: list[dict] = []
+    for e in events_raw:
+        code = (e.get("course_code") or "").split("-")[0].strip().upper()
+        sess = e.get("session_number", "")
+        is_mandatory = False
+        if code in mandatory_data and sess:
+            try:
+                is_mandatory = int(sess) in mandatory_data[code]
+            except ValueError:
+                pass
+        # Update the dict fields directly (payloads are dicts, not dataclasses)
+        e_updated = dict(e)
+        e_updated["mandatory"] = is_mandatory
+        if is_mandatory:
+            subject = e.get("title", "").replace("🔴 MANDATORY: ", "")
+            e_updated["title"] = f"🔴 MANDATORY: {subject}"
+        updated.append(e_updated)
+    set_setting(db, user_token, "preview_events", updated)
 
 
 # Public aliases used by tests

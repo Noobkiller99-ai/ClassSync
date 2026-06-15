@@ -57,6 +57,12 @@
             Not signed in
           {% endif %}
         </span>
+        {% if wisenet_ready %}
+          <span class="badge ok" style="border-color:rgba(239,68,68,.35);color:#f87171;background:rgba(239,68,68,.08)">
+            <span class="dot" style="background:#ef4444"></span>
+            Wisenet Connected
+          </span>
+        {% endif %}
         {% if google_ready %}
           <span class="badge ok">
             <span class="dot"></span>
@@ -248,7 +254,83 @@
         {% endif %}
       {% endif %}
 
+      {# ═══════════════════════════════════════════════════════════
+         WISENET — Mandatory Sessions Panel
+      ═══════════════════════════════════════════════════════════ #}
+      <div class="wisenet-panel">
+        <div class="wisenet-panel-header">
+          <div class="wisenet-panel-info">
+            <div class="wisenet-icon">📚</div>
+            <div>
+              <div class="wisenet-title">Mandatory Sessions</div>
+              <div class="wisenet-sub">
+                {% if wisenet_ready and mandatory_data %}
+                  {% set total_mandatory = mandatory_data.values() | map('length') | sum %}
+                  {{ total_mandatory }} mandatory session{{ 's' if total_mandatory != 1 }} across {{ mandatory_data | length }} course{{ 's' if mandatory_data | length != 1 }}
+                {% elif wisenet_ready %}
+                  Connected — no mandatory sessions found
+                {% else %}
+                  Connect Wisenet to auto-detect mandatory sessions from Course Outlines
+                {% endif %}
+              </div>
+            </div>
+          </div>
+          <div class="wisenet-actions">
+            {% if wisenet_ready %}
+              <form method="post" action="{{ url_for('wisenet_sync') }}" onsubmit="startLoading(this, 'Scanning Wisenet for mandatory sessions…')">
+                <button type="submit" class="btn btn-ghost btn-sm" id="wisenetSyncBtn">↻ Rescan</button>
+              </form>
+              <form method="post" action="{{ url_for('wisenet_reset') }}">
+                <button type="submit" class="btn btn-danger btn-sm">Disconnect</button>
+              </form>
+            {% else %}
+              <button type="button" class="btn btn-wisenet" onclick="toggleWisenetForm()" id="wisenetConnectBtn">
+                🔗 Connect Wisenet
+              </button>
+            {% endif %}
+          </div>
+        </div>
 
+        {# Wisenet login form (hidden by default) #}
+        {% if not wisenet_ready %}
+        <div id="wisenetForm" class="wisenet-form" style="display:none">
+          <form method="post" action="{{ url_for('wisenet_login') }}" onsubmit="startLoading(this, 'Logging into Wisenet via Google SSO…')">
+            <div class="wisenet-form-row">
+              <div class="form-field">
+                <label for="wisenet_email">SPJIMR Email</label>
+                <input id="wisenet_email" name="wisenet_email" type="email"
+                  placeholder="yourname@spjimr.org" autocomplete="email" required>
+              </div>
+              <div class="form-field">
+                <label for="wisenet_password">Google Password</label>
+                <input id="wisenet_password" name="wisenet_password" type="password"
+                  placeholder="Your SPJIMR Google password" autocomplete="current-password" required>
+              </div>
+              <button type="submit" class="btn btn-wisenet" id="wisenetLoginBtn">
+                <span class="btn-label">Scan Wisenet →</span>
+              </button>
+            </div>
+            <p class="security-note">🔒 Credentials are encrypted. Login uses Google SSO in a headless browser.</p>
+          </form>
+        </div>
+        {% endif %}
+
+        {# Show mandatory session breakdown per course #}
+        {% if wisenet_ready and mandatory_data %}
+        <div class="mandatory-breakdown">
+          {% for code, sessions in mandatory_data.items() %}
+            <div class="mandatory-course-row">
+              <span class="mandatory-code">{{ code }}</span>
+              <span class="mandatory-sessions">
+                {% for s in sessions %}
+                  <span class="mandatory-badge">Session {{ s }}</span>
+                {% endfor %}
+              </span>
+            </div>
+          {% endfor %}
+        </div>
+        {% endif %}
+      </div>
 
       <!-- Timetable -->
       {% if event_groups %}
@@ -266,11 +348,16 @@
                 {% for event in group.events %}
                   {# Pick a stable colour index based on subject name length + code length #}
                   {% set cidx = ((event.title | length) + (event.course_code | length)) % (chip_colors | length) %}
-                  <article class="event-card" style="--chip: {{ chip_colors[cidx] }}">
+                  <article class="event-card {{ 'mandatory-card' if event.mandatory else '' }}" style="--chip: {{ chip_colors[cidx] }}">
                     <div class="event-time">
                       {{ event.starts_at[11:16] }} – {{ event.ends_at[11:16] }}
                     </div>
-                    <div class="event-title">{{ event.title }}</div>
+                    <div class="event-title">
+                      {{ event.title }}
+                      {% if event.mandatory %}
+                        <span class="mandatory-pill">🔴 Mandatory</span>
+                      {% endif %}
+                    </div>
                     <div class="event-meta">
                       {% if event.faculty %}
                         <div class="meta-row">
@@ -366,6 +453,16 @@
         setTimeout(function() { t.remove(); }, 450);
       }, 4500 + i * 600);
     });
+
+    /* ── Wisenet form toggle ────────────────────────────────── */
+    function toggleWisenetForm() {
+      var form = document.getElementById('wisenetForm');
+      var btn  = document.getElementById('wisenetConnectBtn');
+      if (!form) return;
+      var isOpen = form.style.display !== 'none';
+      form.style.display = isOpen ? 'none' : 'block';
+      if (btn) btn.textContent = isOpen ? '🔗 Connect Wisenet' : '✕ Cancel';
+    }
   </script>
 
 </body>

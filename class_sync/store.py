@@ -57,6 +57,13 @@ def init_db(path: str | Path) -> None:
                 updated_at      TEXT NOT NULL,
                 PRIMARY KEY (user_token, uid)
             );
+            CREATE TABLE IF NOT EXISTS mandatory_sessions (
+                user_token   TEXT NOT NULL,
+                course_code  TEXT NOT NULL,
+                session_nums TEXT NOT NULL,
+                updated_at   TEXT NOT NULL,
+                PRIMARY KEY (user_token, course_code)
+            );
             """
         )
 
@@ -152,3 +159,37 @@ def mark_many_synced(path: str | Path, user_token: str, event_ids: dict[str, str
             "UPDATE timetable_events SET synced_event_id = ? WHERE user_token = ? AND uid = ?",
             [(event_id, user_token, uid) for uid, event_id in event_ids.items()],
         )
+
+
+# ── Mandatory sessions ─────────────────────────────────────────────────────────
+
+def save_mandatory_sessions(
+    path: str | Path, user_token: str, mandatory_sessions: dict[str, list[int]]
+) -> None:
+    """Persist mandatory session data: course_code → list of session numbers."""
+    now = datetime.now(UTC).isoformat()
+    with connect(path) as conn:
+        for course_code, session_nums in mandatory_sessions.items():
+            conn.execute(
+                "INSERT INTO mandatory_sessions(user_token, course_code, session_nums, updated_at) "
+                "VALUES(?, ?, ?, ?) "
+                "ON CONFLICT(user_token, course_code) DO UPDATE SET "
+                "session_nums = excluded.session_nums, updated_at = excluded.updated_at",
+                (user_token, course_code, json.dumps(session_nums), now),
+            )
+
+
+def get_mandatory_sessions(path: str | Path, user_token: str) -> dict[str, list[int]]:
+    """Load mandatory session data for a user as course_code → list[int]."""
+    with connect(path) as conn:
+        rows = conn.execute(
+            "SELECT course_code, session_nums FROM mandatory_sessions WHERE user_token = ?",
+            (user_token,),
+        ).fetchall()
+    return {row["course_code"]: json.loads(row["session_nums"]) for row in rows}
+
+
+def clear_mandatory_sessions(path: str | Path, user_token: str) -> None:
+    """Remove all mandatory session records for a user."""
+    with connect(path) as conn:
+        conn.execute("DELETE FROM mandatory_sessions WHERE user_token = ?", (user_token,))

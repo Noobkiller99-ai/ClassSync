@@ -632,3 +632,142 @@ details[open] .setup-summary .chevron { transform: rotate(180deg); }
   .top-badges .badge:nth-child(n+2) { display: none; }
   .dash-title { font-size: 24px; }
 }
+
+/* ── ═══════════════════════════════════════════════════════ ─ */
+/*    WISENET — Mandatory Sessions Panel                        */
+/* ── ═══════════════════════════════════════════════════════ ─ */
+
+.btn-wisenet {
+  background: linear-gradient(135deg, #ef4444 0%, #dc2626 100%);
+  color: #fff;
+  box-shadow: 0 4px 20px rgba(239,68,68,.28);
+  font-size: 13px; padding: 9px 18px;
+}
+.btn-wisenet:hover {
+  box-shadow: 0 6px 30px rgba(239,68,68,.45);
+  transform: translateY(-1px);
+}
+.btn-wisenet:active { transform: none; }
+
+.wisenet-panel {
+  border: 1px solid rgba(239,68,68,.2);
+  border-radius: var(--r-lg);
+  background: linear-gradient(135deg, rgba(239,68,68,.04) 0%, rgba(220,38,38,.02) 100%);
+  margin-bottom: 32px;
+  overflow: hidden;
+}
+
+.wisenet-panel-header {
+  display: flex; align-items: center; justify-content: space-between; gap: 16px;
+  padding: 20px 24px;
+}
+
+.wisenet-panel-info {
+  display: flex; align-items: center; gap: 14px;
+}
+
+.wisenet-icon {
+  font-size: 24px; flex-shrink: 0;
+  width: 44px; height: 44px;
+  border-radius: var(--r-sm);
+  background: rgba(239,68,68,.1);
+  border: 1px solid rgba(239,68,68,.25);
+  display: flex; align-items: center; justify-content: center;
+}
+
+.wisenet-title {
+  font-size: 15px; font-weight: 700; color: var(--text);
+  margin-bottom: 3px;
+}
+
+.wisenet-sub {
+  font-size: 13px; color: var(--text-muted);
+}
+
+.wisenet-actions {
+  display: flex; align-items: center; gap: 8px; flex-shrink: 0;
+}
+
+.wisenet-form {
+  border-top: 1px solid rgba(239,68,68,.12);
+  padding: 20px 24px;
+  background: rgba(0,0,0,.15);
+}
+
+.wisenet-form-row {
+  display: flex; align-items: flex-end; gap: 12px; flex-wrap: wrap;
+}
+
+.wisenet-form-row .form-field {
+  flex: 1; min-width: 180px; margin-bottom: 0;
+}
+
+.wisenet-form .security-note {
+  margin-top: 12px; text-align: left; justify-content: flex-start;
+}
+
+/* Mandatory session breakdown */
+.mandatory-breakdown {
+  border-top: 1px solid rgba(239,68,68,.12);
+  padding: 16px 24px;
+  display: flex; flex-direction: column; gap: 10px;
+}
+
+.mandatory-course-row {
+  display: flex; align-items: center; gap: 12px; flex-wrap: wrap;
+}
+
+.mandatory-code {
+  font-size: 12px; font-weight: 700; letter-spacing: .4px;
+  color: #f87171;
+  background: rgba(239,68,68,.1);
+  border: 1px solid rgba(239,68,68,.25);
+  border-radius: 6px; padding: 3px 10px;
+  flex-shrink: 0; min-width: 80px; text-align: center;
+}
+
+.mandatory-sessions {
+  display: flex; flex-wrap: wrap; gap: 6px;
+}
+
+.mandatory-badge {
+  display: inline-flex; align-items: center;
+  background: rgba(239,68,68,.08);
+  border: 1px solid rgba(239,68,68,.2);
+  border-radius: 999px;
+  font-size: 11px; font-weight: 600; color: #fca5a5;
+  padding: 3px 10px;
+}
+
+/* Mandatory event card — red left border + glow */
+.event-card.mandatory-card {
+  border-left-color: #ef4444 !important;
+  background: linear-gradient(135deg, rgba(239,68,68,.06) 0%, var(--surface-1) 40%);
+  box-shadow: -3px 0 16px rgba(239,68,68,.15);
+}
+.event-card.mandatory-card:hover {
+  box-shadow: -3px 0 24px rgba(239,68,68,.25), 0 10px 36px rgba(0,0,0,.32);
+}
+
+.mandatory-pill {
+  display: inline-flex; align-items: center; gap: 4px;
+  background: rgba(239,68,68,.12);
+  border: 1px solid rgba(239,68,68,.25);
+  border-radius: 999px;
+  font-size: 10px; font-weight: 700; color: #f87171;
+  padding: 2px 8px; margin-left: 8px;
+  vertical-align: middle; letter-spacing: .3px;
+  text-transform: uppercase;
+  animation: mandatoryPulse 3s ease-in-out infinite;
+}
+
+@keyframes mandatoryPulse {
+  0%, 100% { box-shadow: 0 0 0 0 rgba(239,68,68,.3); }
+  50% { box-shadow: 0 0 0 4px rgba(239,68,68,0); }
+}
+
+@media (max-width: 860px) {
+  .wisenet-panel-header { flex-direction: column; align-items: flex-start; }
+  .wisenet-form-row { flex-direction: column; }
+  .wisenet-form-row .form-field { width: 100%; }
+}

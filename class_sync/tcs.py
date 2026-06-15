@@ -66,6 +66,20 @@ def parse_tcs_attendance(payload: str | list[dict]) -> list[TimetableEvent]:
         course_code = clean(item.get("sudsubjectshortcode")) or clean(item.get("sudsubjectcode"))
         faculty = clean(item.get("sudfacultyname"))
         classroom = clean(item.get("sudresourcename")) or clean(item.get("venue"))
+        # Extract session number from the "Remarks" field in TCS iON
+        # TCS iON typically stores session number as remarks, sessionno, or sessno
+        session_number = clean(
+            item.get("remarks")
+            or item.get("sessionno")
+            or item.get("sessno")
+            or item.get("sessionNumber")
+            or item.get("session_no")
+            or item.get("SessionNo")
+        )
+        # Normalise: extract just the digits if it looks like "Session 9" or "9"
+        if session_number:
+            num_match = re.search(r"(\d+)", session_number)
+            session_number = num_match.group(1) if num_match else session_number
         uid_bits = [
             clean(item.get("dateindex")) or starts_at.strftime("%Y%m%d"),
             starts_at.strftime("%H%M"),
@@ -84,9 +98,53 @@ def parse_tcs_attendance(payload: str | list[dict]) -> list[TimetableEvent]:
                 starts_at=starts_at,
                 ends_at=ends_at,
                 status=clean(item.get("attendanceStatus") or item.get("status")),
+                session_number=session_number,
             )
         )
     return events
+
+
+def apply_mandatory_flags(
+    events: list[TimetableEvent],
+    mandatory_sessions: dict[str, list[int]],
+) -> list[TimetableEvent]:
+    """
+    Return a new list of events with the mandatory flag set where appropriate.
+
+    Args:
+        events: list of TimetableEvent (from TCS iON)
+        mandatory_sessions: dict mapping course_code → list of mandatory session numbers
+                            (from Wisenet PDF parsing)
+    """
+    result = []
+    for event in events:
+        # Normalise course code for lookup
+        # TCS code may be "FIN521-PDM-46" or "FIN521"; Wisenet key is "FIN521"
+        code = event.course_code.split("-")[0].strip().upper()
+        mandatory_nums = mandatory_sessions.get(code, [])
+        is_mandatory = False
+        if mandatory_nums and event.session_number:
+            try:
+                sess_int = int(event.session_number)
+                is_mandatory = sess_int in mandatory_nums
+            except ValueError:
+                pass
+        if is_mandatory and not event.mandatory:
+            # Create a new frozen event with mandatory=True
+            event = TimetableEvent(
+                uid=event.uid,
+                subject_name=event.subject_name,
+                course_code=event.course_code,
+                faculty=event.faculty,
+                classroom=event.classroom,
+                starts_at=event.starts_at,
+                ends_at=event.ends_at,
+                status=event.status,
+                mandatory=True,
+                session_number=event.session_number,
+            )
+        result.append(event)
+    return result
 
 
 class TcsClient:
@@ -446,6 +504,8 @@ def serialize_events(events: Iterable[TimetableEvent]) -> list[dict]:
             "ends_at": event.ends_at.isoformat(),
             "status": event.status,
             "description": event.description,
+            "mandatory": event.mandatory,
+            "session_number": event.session_number,
         }
         for event in events
     ]
