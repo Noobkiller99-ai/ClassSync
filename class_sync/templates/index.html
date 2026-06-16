@@ -470,20 +470,27 @@
 
 
         {# Show mandatory session breakdown per course #}
-        {% if mandatory_data %}
         <div class="mandatory-breakdown">
-          {% for code, sessions in mandatory_data.items() %}
-            <div class="mandatory-course-row">
-              <span class="mandatory-code">{{ code }}</span>
-              <span class="mandatory-sessions">
-                {% for s in sessions %}
-                  <span class="mandatory-badge">Session {{ s }}</span>
-                {% endfor %}
-              </span>
-            </div>
-          {% endfor %}
+          <div class="mandatory-breakdown-title">📦 Centrally Synced Outlines (Available for All Students)</div>
+          {% if mandatory_data %}
+            {% for code, sessions in mandatory_data.items() %}
+              <div class="mandatory-course-row">
+                <span class="mandatory-code">{{ code }}</span>
+                <span class="mandatory-sessions">
+                  {% if sessions %}
+                    {% for s in sessions %}
+                      <span class="mandatory-badge">Session {{ s }}</span>
+                    {% endfor %}
+                  {% else %}
+                    <span class="mandatory-no-sessions">No mandatory sessions found</span>
+                  {% endif %}
+                </span>
+              </div>
+            {% endfor %}
+          {% else %}
+            <p class="empty-repo-text">No outlines uploaded yet. Drag-and-drop a PDF below to sync it for everyone!</p>
+          {% endif %}
         </div>
-        {% endif %}
       </div>
 
       <!-- Timetable -->
