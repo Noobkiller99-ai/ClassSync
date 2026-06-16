@@ -2,7 +2,12 @@
 wisenet.py — Wisenet (Moodle LMS) client for SPJIMR.
 
 Handles:
-  1. Login via Google SSO (SAML2) using Playwright browser automation
+  1. Login via Google SSO (SAML2) — two modes:
+       a. Server-side token flow: uses the stored Google OAuth access_token +
+          OAuthLogin endpoint to establish a Google session, then completes
+          the SAML2 handshake via requests (no browser, no display, works on Render)
+       b. Browser popup fallback (local only): Playwright headed browser where
+          the user clicks their SPJIMR Google account
   2. Fetching enrolled courses via Moodle AJAX API
   3. Downloading Course Outline PDFs from each course
   4. Parsing mandatory sessions from those PDFs
@@ -229,36 +234,59 @@ def login_via_google_token(google_creds: dict) -> tuple[dict, str, str]:
     except Exception as exc:
         raise RuntimeError(f"SAML2 redirect failed: {exc}") from exc
 
-    # Google should return an auto-submitting HTML form with SAMLResponse
+    # Google returns an auto-submitting HTML form with SAMLResponse + RelayState.
+    # We need to parse it and POST it manually (no JS engine in requests).
     saml_response: str | None = None
     relay_state: str | None = None
     acs_url: str | None = None
 
-    # Try to find the SAMLResponse form in the response chain
-    for page in [saml_r]:
+    def _parse_saml_form(html: str) -> tuple[str | None, str | None, str | None]:
+        """
+        Parse a SAML response form from HTML.
+        Returns (acs_url, saml_response, relay_state) or (None, None, None).
+        Handles:
+          - HTML-encoded values (Google encodes + as &#43;, = as &#61;, etc.)
+          - Both double- and single-quoted attribute values
+          - name/value in either order in <input>
+        """
+        from html import unescape
+
         form_m = re.search(
-            r'<form[^>]+action="([^"]+)"[^>]*>(.*?)</form>',
-            page.text,
-            re.S | re.I,
+            r'<form[^>]+action=["\']([^"\']+)["\'][^>]*>(.*?)</form>',
+            html, re.S | re.I,
         )
-        if form_m:
-            acs_url = form_m.group(1)
-            form_body = form_m.group(2)
-            for inp in re.finditer(
-                r'<input[^>]+name="([^"]+)"[^>]+value="([^"]*)"',
-                form_body,
-                re.I,
-            ):
-                name, val = inp.group(1), inp.group(2)
-                if name == "SAMLResponse":
-                    saml_response = val
-                elif name == "RelayState":
-                    relay_state = val
-            if saml_response:
-                break
+        if not form_m:
+            return None, None, None
+
+        found_acs = form_m.group(1)
+        form_body = form_m.group(2)
+
+        # Match <input ...> tags — attributes may appear in any order, may use ' or "
+        inputs: dict[str, str] = {}
+        for inp in re.finditer(r'<input\b([^>]+)>', form_body, re.I):
+            attrs_str = inp.group(1)
+            name_m = re.search(r'\bname=["\']([^"\']*)["\']', attrs_str, re.I)
+            val_m  = re.search(r'\bvalue=["\']([^"\']*)["\']', attrs_str, re.I)
+            if name_m and val_m:
+                inputs[name_m.group(1)] = unescape(val_m.group(1))
+
+        return (
+            found_acs,
+            inputs.get("SAMLResponse"),
+            inputs.get("RelayState"),
+        )
+
+    # Scan final response + all redirect history for the SAMLResponse form
+    pages_to_scan = [saml_r] + list(saml_r.history)
+    for page in pages_to_scan:
+        acs_url, saml_response, relay_state = _parse_saml_form(page.text)
+        if saml_response:
+            logger.debug("SAMLResponse found (len=%d) at %s", len(saml_response), page.url)
+            break
 
     if not saml_response or not acs_url:
-        # Check if we're already on Wisenet (sometimes SSO skips the form)
+        # Check if we're already on Wisenet (sometimes SSO skips the SAML form
+        # because the session is already established by the Google cookies)
         wisenet_cookies_now = {
             c.name: c.value
             for c in sess.cookies
@@ -267,10 +295,15 @@ def login_via_google_token(google_creds: dict) -> tuple[dict, str, str]:
         if wisenet_cookies_now.get("MoodleSession"):
             logger.info("SSO completed without explicit SAMLResponse POST (session already set)")
         else:
+            # Log a snippet of the last response to aid debugging
+            snippet = saml_r.text[:800].replace("\n", " ")
+            logger.warning("SAML2 last page URL=%s snippet=%s", saml_r.url, snippet)
             raise RuntimeError(
-                "SAML2 flow did not produce a SAMLResponse. "
-                "Google may have shown an account picker or consent screen — "
-                "please reconnect Google Calendar to re-authorise, then try again."
+                "Wisenet SSO flow did not produce a SAMLResponse. "
+                "This usually means Google showed an account picker or a consent screen "
+                "that requires user interaction. "
+                "Reconnect Google Calendar (Disconnect → re-authorise with your SPJIMR "
+                "account) to refresh permissions, then try again."
             )
     else:
         # ── Step 5: POST SAMLResponse to Wisenet ACS ──────────────────────────
