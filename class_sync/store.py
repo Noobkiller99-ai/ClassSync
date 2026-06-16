@@ -41,6 +41,14 @@ def init_db(path: str | Path) -> None:
         except Exception:
             pass
 
+        # Migrate mandatory_sessions to global central store schema if it has old format
+        try:
+            cols = [row[1] for row in conn.execute("PRAGMA table_info(mandatory_sessions)").fetchall()]
+            if cols and "user_token" in cols:
+                conn.execute("DROP TABLE IF EXISTS mandatory_sessions")
+        except Exception:
+            pass
+
         conn.executescript(
             """
             CREATE TABLE IF NOT EXISTS settings (
@@ -58,11 +66,9 @@ def init_db(path: str | Path) -> None:
                 PRIMARY KEY (user_token, uid)
             );
             CREATE TABLE IF NOT EXISTS mandatory_sessions (
-                user_token   TEXT NOT NULL,
-                course_code  TEXT NOT NULL,
+                course_code  TEXT PRIMARY KEY,
                 session_nums TEXT NOT NULL,
-                updated_at   TEXT NOT NULL,
-                PRIMARY KEY (user_token, course_code)
+                updated_at   TEXT NOT NULL
             );
             """
         )
@@ -164,23 +170,23 @@ def mark_many_synced(path: str | Path, user_token: str, event_ids: dict[str, str
 # ── Mandatory sessions ─────────────────────────────────────────────────────────
 
 def save_mandatory_sessions(
-    path: str | Path, user_token: str, mandatory_sessions: dict[str, list[int]]
+    path: str | Path, mandatory_sessions: dict[str, list[int]]
 ) -> None:
-    """Persist mandatory session data: course_code → list of session numbers."""
+    """Persist mandatory session data centrally: course_code → list of session numbers."""
     now = datetime.now(UTC).isoformat()
     with connect(path) as conn:
         for course_code, session_nums in mandatory_sessions.items():
             conn.execute(
-                "INSERT INTO mandatory_sessions(user_token, course_code, session_nums, updated_at) "
-                "VALUES(?, ?, ?, ?) "
-                "ON CONFLICT(user_token, course_code) DO UPDATE SET "
+                "INSERT INTO mandatory_sessions(course_code, session_nums, updated_at) "
+                "VALUES(?, ?, ?) "
+                "ON CONFLICT(course_code) DO UPDATE SET "
                 "session_nums = excluded.session_nums, updated_at = excluded.updated_at",
-                (user_token, course_code, json.dumps(session_nums), now),
+                (course_code, json.dumps(session_nums), now),
             )
 
 
-def get_mandatory_sessions(path: str | Path, user_token: str) -> dict[str, list[int]]:
-    """Load mandatory session data globally as course_code → list[int]."""
+def get_mandatory_sessions(path: str | Path) -> dict[str, list[int]]:
+    """Load mandatory session data centrally as course_code → list[int]."""
     res: dict[str, list[int]] = {}
     with connect(path) as conn:
         rows = conn.execute(
@@ -191,7 +197,14 @@ def get_mandatory_sessions(path: str | Path, user_token: str) -> dict[str, list[
     return res
 
 
-def clear_mandatory_sessions(path: str | Path, user_token: str) -> None:
-    """Remove all mandatory session records for a user."""
+def clear_mandatory_sessions(path: str | Path) -> None:
+    """Remove all central mandatory session records."""
     with connect(path) as conn:
-        conn.execute("DELETE FROM mandatory_sessions WHERE user_token = ?", (user_token,))
+        conn.execute("DELETE FROM mandatory_sessions")
+
+
+def get_all_user_tokens(path: str | Path) -> list[str]:
+    """Get all unique user tokens stored in the settings table."""
+    with connect(path) as conn:
+        rows = conn.execute("SELECT DISTINCT user_token FROM settings").fetchall()
+    return [row[0] for row in rows]

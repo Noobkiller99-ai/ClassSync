@@ -167,7 +167,7 @@ def test_wisenet_upload_and_global_sharing(tmp_path):
 
     # Verify that a different user query gets the shared course outline
     db = app.config["DATABASE"]
-    sessions = get_mandatory_sessions(db, "different-user-token")
+    sessions = get_mandatory_sessions(db)
     assert "FIN521" in sessions
     assert sessions["FIN521"] == [1, 3, 5]
 
@@ -255,6 +255,87 @@ def test_google_calendar_duplicate_prevention_and_color():
         mock_service.events().insert.assert_any_call(
             calendarId="primary", body=body_3
         )
+
+
+def test_central_distribution_on_upload(tmp_path):
+    from unittest.mock import patch
+    from class_sync.wisenet import MandatorySessionInfo
+    from class_sync.store import save_events, list_event_payloads, set_setting
+    from class_sync.models import TimetableEvent
+    from datetime import datetime
+    import io
+
+    app = make_app(tmp_path)
+    db = app.config["DATABASE"]
+    client = app.test_client()
+
+    # Create two users with stored settings and events in the database
+    user1_tok = "user-1-token"
+    user2_tok = "user-2-token"
+
+    ev1 = TimetableEvent(
+        uid="uid-user1-1",
+        subject_name="Financial Innovations & Fintech",
+        course_code="FIN521-PDM",
+        faculty="Vidhu Shekhar",
+        classroom="NCR5",
+        starts_at=datetime(2026, 6, 10, 10, 40),
+        ends_at=datetime(2026, 6, 10, 11, 50),
+        session_number="1"
+    )
+    ev2 = TimetableEvent(
+        uid="uid-user2-1",
+        subject_name="Financial Innovations & Fintech",
+        course_code="FIN521-PDM",
+        faculty="Vidhu Shekhar",
+        classroom="NCR5",
+        starts_at=datetime(2026, 6, 10, 10, 40),
+        ends_at=datetime(2026, 6, 10, 11, 50),
+        session_number="1"
+    )
+
+    # Initialize setting & save event for user 1
+    from class_sync.tcs import serialize_events
+    set_setting(db, user1_tok, "preview_events", serialize_events([ev1]))
+    save_events(db, user1_tok, [ev1])
+
+    # Initialize setting & save event for user 2
+    set_setting(db, user2_tok, "preview_events", serialize_events([ev2]))
+    save_events(db, user2_tok, [ev2])
+
+    mock_info = MandatorySessionInfo(
+        course_code="FIN521",
+        course_shortname="FIN521-PDM-46",
+        mandatory_sessions=[1, 3]  # session 1 is mandatory
+    )
+
+    with patch("class_sync.wisenet.parse_mandatory_sessions_from_pdf", return_value=mock_info):
+        # We perform upload on user1 session context
+        data = {
+            "pdf_files": (io.BytesIO(b"%PDF-1.4 dummy"), "FIN521-Outline.pdf")
+        }
+        res = client.post(
+            "/wisenet/upload",
+            data=data,
+            content_type="multipart/form-data",
+            follow_redirects=True
+        )
+        assert res.status_code == 200
+
+    # Verify that BOTH user 1 and user 2 got their stored database events updated to mandatory!
+    payloads_user1 = list_event_payloads(db, user1_tok)
+    payloads_user2 = list_event_payloads(db, user2_tok)
+
+    assert len(payloads_user1) == 1
+    assert payloads_user1[0]["extendedProperties"]["private"]["mandatory"] == "true"
+    assert payloads_user1[0]["colorId"] == "11"
+    assert "🔴 MANDATORY:" in payloads_user1[0]["summary"]
+
+    assert len(payloads_user2) == 1
+    assert payloads_user2[0]["extendedProperties"]["private"]["mandatory"] == "true"
+    assert payloads_user2[0]["colorId"] == "11"
+    assert "🔴 MANDATORY:" in payloads_user2[0]["summary"]
+
 
 
 

@@ -31,6 +31,7 @@ from .store import (
     database_path,
     delete_setting,
     get_all_users_with_credentials,
+    get_all_user_tokens,
     get_mandatory_sessions,
     get_setting,
     init_db,
@@ -96,7 +97,7 @@ def create_app(test_config: dict | None = None) -> Flask:
         events_raw: list[dict] = get_setting(db, tok, "preview_events", [])  # type: ignore[assignment]
         google_ready = bool(get_setting(db, tok, "google_credentials", None))
         tcs_ready = bool(get_setting(db, tok, "tcs_credentials_encrypted", None))
-        mandatory_data = get_mandatory_sessions(db, tok)
+        mandatory_data = get_mandatory_sessions(db)
         wisenet_ready = bool(get_setting(db, tok, "wisenet_cookies", None)) or bool(mandatory_data)
         synced = bool(
             google_ready
@@ -177,7 +178,6 @@ def create_app(test_config: dict | None = None) -> Flask:
         delete_setting(db, tok, "wisenet_credentials_encrypted")
         delete_setting(db, tok, "wisenet_cookies")
         clear_events(db, tok)
-        clear_mandatory_sessions(db, tok)
         flash("Session cleared. Enter your TCS iON credentials to start over.", "info")
         return redirect(url_for("index"))
 
@@ -457,13 +457,14 @@ def create_app(test_config: dict | None = None) -> Flask:
             session_info = parse_mandatory_sessions_from_pdf(pdf_bytes, course_code)
             
             if session_info and session_info.mandatory_sessions:
-                # Add/merge into current sessions in DB
-                current_sessions = get_mandatory_sessions(db, tok)
+                # Add/merge into current sessions in DB centrally
+                current_sessions = get_mandatory_sessions(db)
                 current_sessions[course_code] = session_info.mandatory_sessions
-                save_mandatory_sessions(db, tok, current_sessions)
+                save_mandatory_sessions(db, current_sessions)
                 
-                # Re-apply to existing events immediately
-                _reapply_mandatory_flags(app, tok, current_sessions)
+                # Re-apply to existing events for all users immediately
+                for user_tok in get_all_user_tokens(db):
+                    _reapply_mandatory_flags(app, user_tok, current_sessions)
                 
                 res_ok = jsonify({"ok": True, "count": len(session_info.mandatory_sessions)})
                 res_ok.headers["Access-Control-Allow-Origin"] = "*"
@@ -487,9 +488,10 @@ def create_app(test_config: dict | None = None) -> Flask:
         # Clear state
         delete_setting(db, tok, "wisenet_state")
         
-        # Re-apply to existing events
-        mandatory_data = get_mandatory_sessions(db, tok)
-        _reapply_mandatory_flags(app, tok, mandatory_data)
+        # Re-apply to existing events centrally for all users
+        mandatory_data = get_mandatory_sessions(db)
+        for user_tok in get_all_user_tokens(db):
+            _reapply_mandatory_flags(app, user_tok, mandatory_data)
         
         total = sum(len(v) for v in mandatory_data.values())
         flash(
@@ -515,7 +517,6 @@ def create_app(test_config: dict | None = None) -> Flask:
         db = app.config["DATABASE"]
         delete_setting(db, tok, "wisenet_credentials_encrypted")  # legacy cleanup
         delete_setting(db, tok, "wisenet_cookies")
-        clear_mandatory_sessions(db, tok)
         flash("Wisenet disconnected.", "info")
         return redirect(url_for("index"))
 
@@ -555,16 +556,16 @@ def create_app(test_config: dict | None = None) -> Flask:
                 
                 session_info = parse_mandatory_sessions_from_pdf(pdf_bytes, course_code)
                 if session_info and session_info.mandatory_sessions:
-                    # Save to DB
-                    current_sessions = get_mandatory_sessions(db, tok)
+                    # Save to DB centrally
+                    current_sessions = get_mandatory_sessions(db)
                     current_sessions[course_code] = session_info.mandatory_sessions
-                    save_mandatory_sessions(db, tok, current_sessions)
+                    save_mandatory_sessions(db, current_sessions)
                     success_count += 1
                 else:
-                    # Even if no mandatory sessions are found, save an empty list to indicate it's scanned
-                    current_sessions = get_mandatory_sessions(db, tok)
+                    # Even if no mandatory sessions are found, save an empty list centrally
+                    current_sessions = get_mandatory_sessions(db)
                     current_sessions[course_code] = []
-                    save_mandatory_sessions(db, tok, current_sessions)
+                    save_mandatory_sessions(db, current_sessions)
                     success_count += 1
                     
             except Exception as e:
@@ -572,8 +573,9 @@ def create_app(test_config: dict | None = None) -> Flask:
                 error_count += 1
                 
         if success_count > 0:
-            mandatory_data = get_mandatory_sessions(db, tok)
-            _reapply_mandatory_flags(app, tok, mandatory_data)
+            mandatory_data = get_mandatory_sessions(db)
+            for user_tok in get_all_user_tokens(db):
+                _reapply_mandatory_flags(app, user_tok, mandatory_data)
             flash(
                 f"Successfully processed {success_count} course outline(s)! "
                 f"Mandatory sessions are now marked in red.",
@@ -727,11 +729,10 @@ def _fetch_timetable(app: Flask, credentials: dict, user_token: str | None = Non
             client.fetch_timetable(credentials["username"], credentials["password"], now=now),
             now=now,
         )
-    # Apply mandatory flags if Wisenet data is available
-    if user_token:
-        mandatory_data = get_mandatory_sessions(app.config["DATABASE"], user_token)
-        if mandatory_data:
-            events = apply_mandatory_flags(events, mandatory_data)
+    # Apply mandatory flags if central Wisenet data is available
+    mandatory_data = get_mandatory_sessions(app.config["DATABASE"])
+    if mandatory_data:
+        events = apply_mandatory_flags(events, mandatory_data)
     return events
 
 
