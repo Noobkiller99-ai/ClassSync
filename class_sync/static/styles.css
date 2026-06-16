@@ -771,6 +771,9 @@ details[open] .setup-summary .chevron { transform: rotate(180deg); }
   background: linear-gradient(135deg, rgba(239,68,68,.06) 0%, var(--surface-1) 40%);
   box-shadow: -3px 0 16px rgba(239,68,68,.15);
 }
+.event-card.mandatory-card .event-title {
+  color: var(--error) !important;
+}
 .event-card.mandatory-card:hover {
   box-shadow: -3px 0 24px rgba(239,68,68,.25), 0 10px 36px rgba(0,0,0,.32);
 }

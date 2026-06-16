@@ -832,9 +832,11 @@ def _reapply_mandatory_flags(
         # Update the dict fields directly (payloads are dicts, not dataclasses)
         e_updated = dict(e)
         e_updated["mandatory"] = is_mandatory
+        subject = e.get("title", "").replace("🔴 MANDATORY: ", "")
         if is_mandatory:
-            subject = e.get("title", "").replace("🔴 MANDATORY: ", "")
             e_updated["title"] = f"🔴 MANDATORY: {subject}"
+        else:
+            e_updated["title"] = subject
         updated.append(e_updated)
     set_setting(db, user_token, "preview_events", updated)
 

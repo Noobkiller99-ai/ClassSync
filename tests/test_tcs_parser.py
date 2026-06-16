@@ -18,6 +18,10 @@ def test_parse_tcs_attendance_sample():
     assert first.classroom == "NCR5"
     assert first.starts_at.isoformat() == "2026-06-09T10:40:00"
     assert first.ends_at.isoformat() == "2026-06-09T11:50:00"
+    assert first.session_number == "3"
+    assert events[1].session_number == "1"
+    assert events[2].session_number == "2"
+    assert events[3].session_number == "3"
 
 
 def test_google_payload_contract():

@@ -67,15 +67,22 @@ def parse_tcs_attendance(payload: str | list[dict]) -> list[TimetableEvent]:
         faculty = clean(item.get("sudfacultyname"))
         classroom = clean(item.get("sudresourcename")) or clean(item.get("venue"))
         # Extract session number from the "Remarks" field in TCS iON
-        # TCS iON typically stores session number as remarks, sessionno, or sessno
-        session_number = clean(
-            item.get("remarks")
-            or item.get("sessionno")
-            or item.get("sessno")
-            or item.get("sessionNumber")
-            or item.get("session_no")
-            or item.get("SessionNo")
-        )
+        # Try keys in order, prioritizing fields that contain digits.
+        session_number = ""
+        for key in ["Remarks", "remarks", "slot_remarks", "slotRemarks", "sessionno", "sessno", "sessionNumber", "session_no", "SessionNo"]:
+            val = clean(item.get(key))
+            if val and re.search(r"\d", val):
+                session_number = val
+                break
+        
+        if not session_number:
+            session_number = clean(
+                item.get("Remarks")
+                or item.get("remarks")
+                or item.get("slot_remarks")
+                or item.get("sessionno")
+            )
+            
         # Normalise: extract just the digits if it looks like "Session 9" or "9"
         if session_number:
             num_match = re.search(r"(\d+)", session_number)
