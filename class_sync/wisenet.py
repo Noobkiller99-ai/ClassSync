@@ -461,15 +461,15 @@ def parse_mandatory_sessions_from_pdf(pdf_bytes: bytes, course_shortname: str) -
                     # Skip rows with no mandatory indicator
                     if not mandatory_cell or mandatory_cell in {"-", "no", "n/a", "na"}:
                         continue
-                    # Skip rows where mandatory cell has no "yes"
-                    if "yes" not in mandatory_cell:
+                    # Skip rows where mandatory cell has no "yes" or "*"
+                    if "yes" not in mandatory_cell and "*" not in mandatory_cell:
                         continue
 
                     # Parse session numbers from the session cell
                     session_nums = _parse_session_nums(session_cell)
 
                     # Determine which sessions are mandatory
-                    if mandatory_cell == "yes":
+                    if mandatory_cell == "yes" or mandatory_cell == "*":
                         # All sessions in this row are mandatory
                         mandatory.extend(session_nums)
                     else:
