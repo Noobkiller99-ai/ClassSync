@@ -82,3 +82,55 @@ def test_reset_clears_tcs_state(tmp_path):
     assert response.status_code == 200
     assert b"Session cleared" in response.data
     assert b"Sync with Google Calendar" not in response.data
+
+
+def test_wisenet_ingest_flow(tmp_path):
+    from unittest.mock import patch
+    from class_sync.wisenet import MandatorySessionInfo
+    import base64
+    from urllib.parse import urlparse, parse_qs
+
+    app = make_app(tmp_path)
+    client = app.test_client()
+
+    # Get index to generate user_token
+    client.get("/")
+
+    # Initiate connect to get state
+    response = client.post("/wisenet/connect", follow_redirects=False)
+    assert response.status_code == 302
+    
+    parsed = urlparse(response.location)
+    wants = parse_qs(parsed.query).get("wants", [None])[0]
+    assert wants is not None
+    parsed_wants = urlparse(wants)
+    state = parse_qs(parsed_wants.query).get("state", [None])[0]
+    assert state is not None
+
+    dummy_pdf = base64.b64encode(b"%PDF-1.4...").decode("utf-8")
+    
+    mock_info = MandatorySessionInfo(
+        course_code="FIN521",
+        course_shortname="FIN521-PDM-46",
+        mandatory_sessions=[1, 3, 5]
+    )
+
+    with patch("class_sync.wisenet.parse_mandatory_sessions_from_pdf", return_value=mock_info):
+        res = client.post(
+            "/wisenet/ingest",
+            json={
+                "state": state,
+                "sesskey": "test_sesskey",
+                "course_code": "FIN521-PDM-46",
+                "pdf_base64": dummy_pdf
+            }
+        )
+        assert res.status_code == 200
+        assert res.json["ok"] is True
+        assert res.json["count"] == 3
+
+    # Now check /wisenet/sync_done
+    response = client.get(f"/wisenet/sync_done", follow_redirects=True)
+    assert response.status_code == 200
+    assert b"Wisenet sync done" in response.data
+

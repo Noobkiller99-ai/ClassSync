@@ -215,7 +215,7 @@ def create_app(test_config: dict | None = None) -> Flask:
         It orchestrates fetching courses, downloading PDFs, and POSTing them to our backend.
         """
         state = request.args.get("state", "")
-        process_url = url_for("wisenet_process_pdf", _external=True)
+        process_url = url_for("wisenet_ingest", _external=True)
         done_url = url_for("wisenet_sync_done", _external=True)
 
         html = f"""<!DOCTYPE html>
@@ -365,6 +365,7 @@ def create_app(test_config: dict | None = None) -> Flask:
           headers: {{ 'Content-Type': 'application/json' }},
           body: JSON.stringify({{
             state: STATE,
+            sesskey: sesskey,
             course_id: course.id,
             course_code: course.shortname,
             pdf_base64: base64Pdf
@@ -393,11 +394,11 @@ def create_app(test_config: dict | None = None) -> Flask:
 </html>"""
         return html, 200, {"Content-Type": "text/html; charset=utf-8"}
 
-    @app.post("/wisenet/process_pdf")
-    def wisenet_process_pdf():
+    @app.post("/wisenet/ingest")
+    def wisenet_ingest():
         """
         Receives raw PDF bytes from the JS bridge, parses mandatory sessions,
-        and saves them to the database.
+        saves them to the database, and re-applies flags.
         """
         from .wisenet import parse_mandatory_sessions_from_pdf
         import base64
@@ -407,6 +408,7 @@ def create_app(test_config: dict | None = None) -> Flask:
 
         data = request.get_json(silent=True) or {}
         state = data.get("state", "")
+        sesskey = data.get("sesskey", "")
         course_code = data.get("course_code", "")
         pdf_b64 = data.get("pdf_base64", "")
 
@@ -418,16 +420,24 @@ def create_app(test_config: dict | None = None) -> Flask:
         if not pdf_b64 or not course_code:
             return {"ok": False, "error": "Missing PDF data."}
 
+        # Mark wisenet as connected by storing the sesskey/dummy token
+        if sesskey:
+            set_setting(db, tok, "wisenet_cookies", {"sesskey": sesskey})
+
         try:
             pdf_bytes = base64.b64decode(pdf_b64)
             session_info = parse_mandatory_sessions_from_pdf(pdf_bytes, course_code)
             
-            if session_info and session_info.sessions:
+            if session_info and session_info.mandatory_sessions:
                 # Add/merge into current sessions in DB
                 current_sessions = get_mandatory_sessions(db, tok)
-                current_sessions[course_code] = session_info.sessions
+                current_sessions[course_code] = session_info.mandatory_sessions
                 save_mandatory_sessions(db, tok, current_sessions)
-                return {"ok": True, "count": len(session_info.sessions)}
+                
+                # Re-apply to existing events immediately
+                _reapply_mandatory_flags(app, tok, current_sessions)
+                
+                return {"ok": True, "count": len(session_info.mandatory_sessions)}
                 
             return {"ok": True, "count": 0}
         except Exception as e:
@@ -462,8 +472,7 @@ def create_app(test_config: dict | None = None) -> Flask:
         Legacy scraper route. Since we no longer have cross-origin cookies on the
         server, we redirect the user to reconnect so the client-side bridge runs.
         """
-        flash("Please connect Wisenet to sync latest course outlines.", "info")
-        return redirect(url_for("index"))
+        return redirect(url_for("wisenet_connect"))
 
 
     @app.post("/wisenet/reset")
@@ -632,7 +641,7 @@ def _sync_calendar(app: Flask, user_token: str):
     credentials = get_setting(db, user_token, "google_credentials", None)
     client = GoogleCalendarClient(
         credentials=credentials,
-        dry_run=bool(credentials and credentials.get("dry_run")),
+        dry_run=bool(credentials and credentials.get("dry_run")) or app.config.get("TESTING", False),
     )
     payloads = list_event_payloads(db, user_token)
     result = client.sync(payloads)
