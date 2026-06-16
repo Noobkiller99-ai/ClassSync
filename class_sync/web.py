@@ -96,8 +96,8 @@ def create_app(test_config: dict | None = None) -> Flask:
         events_raw: list[dict] = get_setting(db, tok, "preview_events", [])  # type: ignore[assignment]
         google_ready = bool(get_setting(db, tok, "google_credentials", None))
         tcs_ready = bool(get_setting(db, tok, "tcs_credentials_encrypted", None))
-        wisenet_ready = bool(get_setting(db, tok, "wisenet_cookies", None))
-        mandatory_data = get_mandatory_sessions(db, tok) if wisenet_ready else {}
+        mandatory_data = get_mandatory_sessions(db, tok)
+        wisenet_ready = bool(get_setting(db, tok, "wisenet_cookies", None)) or bool(mandatory_data)
         synced = bool(
             google_ready
             and any(e.get("synced_event_id") for e in list_event_payloads(db, tok))
@@ -519,6 +519,71 @@ def create_app(test_config: dict | None = None) -> Flask:
         flash("Wisenet disconnected.", "info")
         return redirect(url_for("index"))
 
+    @app.post("/wisenet/upload")
+    def wisenet_upload():
+        """
+        Receives uploaded Course Outline PDFs, extracts their course codes,
+        parses the mandatory sessions, and saves them globally in the database.
+        """
+        from .wisenet import parse_mandatory_sessions_from_pdf
+        
+        tok = _user_token()
+        db = app.config["DATABASE"]
+        
+        uploaded_files = request.files.getlist("pdf_files")
+        if not uploaded_files or not uploaded_files[0].filename:
+            flash("No files selected.", "error")
+            return redirect(url_for("index"))
+            
+        success_count = 0
+        skipped_count = 0
+        error_count = 0
+        
+        for file in uploaded_files:
+            filename = file.filename or "unknown.pdf"
+            if not filename.lower().endswith(".pdf"):
+                skipped_count += 1
+                continue
+                
+            try:
+                pdf_bytes = file.read()
+                course_code = _extract_course_code(filename, pdf_bytes)
+                if not course_code:
+                    logger.warning("Could not determine course code for uploaded file: %s", filename)
+                    error_count += 1
+                    continue
+                
+                session_info = parse_mandatory_sessions_from_pdf(pdf_bytes, course_code)
+                if session_info and session_info.mandatory_sessions:
+                    # Save to DB
+                    current_sessions = get_mandatory_sessions(db, tok)
+                    current_sessions[course_code] = session_info.mandatory_sessions
+                    save_mandatory_sessions(db, tok, current_sessions)
+                    success_count += 1
+                else:
+                    # Even if no mandatory sessions are found, save an empty list to indicate it's scanned
+                    current_sessions = get_mandatory_sessions(db, tok)
+                    current_sessions[course_code] = []
+                    save_mandatory_sessions(db, tok, current_sessions)
+                    success_count += 1
+                    
+            except Exception as e:
+                logger.error("Error processing uploaded PDF %s: %s", filename, e)
+                error_count += 1
+                
+        if success_count > 0:
+            mandatory_data = get_mandatory_sessions(db, tok)
+            _reapply_mandatory_flags(app, tok, mandatory_data)
+            flash(
+                f"Successfully processed {success_count} course outline(s)! "
+                f"Mandatory sessions are now marked in red.",
+                "success"
+            )
+        else:
+            flash("Could not parse any mandatory sessions from the uploaded files.", "error")
+            
+        return redirect(url_for("index"))
+
     @app.post("/preview")
     @app.get("/preview")
     def preview():
@@ -772,6 +837,30 @@ def _reapply_mandatory_flags(
             e_updated["title"] = f"🔴 MANDATORY: {subject}"
         updated.append(e_updated)
     set_setting(db, user_token, "preview_events", updated)
+
+
+def _extract_course_code(filename: str, pdf_bytes: bytes) -> str | None:
+    import re
+    # 1. Search filename for patterns like "FIN521"
+    match = re.search(r'\b([A-Z]{3,4}\s*\d{3})\b', filename.upper())
+    if match:
+        return match.group(1).replace(" ", "").upper()
+    
+    # 2. Extract first page text from PDF bytes using pdfplumber
+    try:
+        import io
+        import pdfplumber
+        with pdfplumber.open(io.BytesIO(pdf_bytes)) as pdf:
+            if pdf.pages:
+                first_page_text = pdf.pages[0].extract_text() or ""
+                # Look for codes like FIN 521 or FIN521
+                match = re.search(r'\b([A-Z]{3,4})\s*(\d{3})\b', first_page_text.upper())
+                if match:
+                    return f"{match.group(1)}{match.group(2)}".upper()
+    except Exception as e:
+        logger.warning("Failed to extract course code from PDF text: %s", e)
+    
+    return None
 
 
 # Public aliases used by tests

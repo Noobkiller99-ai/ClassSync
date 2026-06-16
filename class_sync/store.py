@@ -180,13 +180,15 @@ def save_mandatory_sessions(
 
 
 def get_mandatory_sessions(path: str | Path, user_token: str) -> dict[str, list[int]]:
-    """Load mandatory session data for a user as course_code → list[int]."""
+    """Load mandatory session data globally as course_code → list[int]."""
+    res: dict[str, list[int]] = {}
     with connect(path) as conn:
         rows = conn.execute(
-            "SELECT course_code, session_nums FROM mandatory_sessions WHERE user_token = ?",
-            (user_token,),
+            "SELECT course_code, session_nums FROM mandatory_sessions ORDER BY updated_at ASC"
         ).fetchall()
-    return {row["course_code"]: json.loads(row["session_nums"]) for row in rows}
+        for row in rows:
+            res[row["course_code"]] = json.loads(row["session_nums"])
+    return res
 
 
 def clear_mandatory_sessions(path: str | Path, user_token: str) -> None:

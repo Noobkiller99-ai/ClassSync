@@ -134,3 +134,41 @@ def test_wisenet_ingest_flow(tmp_path):
     assert response.status_code == 200
     assert b"Wisenet sync done" in response.data
 
+
+def test_wisenet_upload_and_global_sharing(tmp_path):
+    from unittest.mock import patch
+    from class_sync.wisenet import MandatorySessionInfo
+    from class_sync.store import get_mandatory_sessions
+    import io
+
+    app = make_app(tmp_path)
+    client = app.test_client()
+
+    client.get("/")  # create session token
+
+    mock_info = MandatorySessionInfo(
+        course_code="FIN521",
+        course_shortname="FIN521-PDM-46",
+        mandatory_sessions=[1, 3, 5]
+    )
+
+    with patch("class_sync.wisenet.parse_mandatory_sessions_from_pdf", return_value=mock_info):
+        data = {
+            "pdf_files": (io.BytesIO(b"%PDF-1.4 dummy"), "FIN521-Outline.pdf")
+        }
+        res = client.post(
+            "/wisenet/upload",
+            data=data,
+            content_type="multipart/form-data",
+            follow_redirects=True
+        )
+        assert res.status_code == 200
+        assert b"Successfully processed 1 course outline" in res.data
+
+    # Verify that a different user query gets the shared course outline
+    db = app.config["DATABASE"]
+    sessions = get_mandatory_sessions(db, "different-user-token")
+    assert "FIN521" in sessions
+    assert sessions["FIN521"] == [1, 3, 5]
+
+
