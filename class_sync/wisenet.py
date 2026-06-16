@@ -393,10 +393,23 @@ def parse_mandatory_sessions_from_pdf(pdf_bytes: bytes, course_shortname: str) -
                 data_start_row = 0
 
                 for row_idx, row in enumerate(table):
-                    cells = [str(c).replace("\n", " ").strip().lower() if c else "" for c in row]
-                    # Detect header row: must contain "mandatory" AND "session"
-                    if any("mandatory" in c and "session" in c for c in cells):
-                        for ci, cell in enumerate(cells):
+                    # Merge cells vertically across next 3 rows to handle split headers
+                    col_count = len(row)
+                    merged_cells = [""] * col_count
+                    for next_row_idx in range(row_idx, min(row_idx + 3, len(table))):
+                        next_row = table[next_row_idx]
+                        if not next_row or len(next_row) != col_count:
+                            continue
+                        for ci, cell in enumerate(next_row):
+                            val = str(cell).replace("\n", " ").strip() if cell else ""
+                            if val:
+                                merged_cells[ci] += " " + val
+                    
+                    merged_cells = [c.strip().lower() for c in merged_cells]
+                    
+                    # Detect header row: a merged column must contain "mandatory" AND "session"
+                    if any("mandatory" in c and "session" in c for c in merged_cells):
+                        for ci, cell in enumerate(merged_cells):
                             if "mandatory" in cell and "session" in cell:
                                 local_mandatory_col = ci
                                 in_session_table = True
@@ -408,7 +421,7 @@ def parse_mandatory_sessions_from_pdf(pdf_bytes: bytes, course_shortname: str) -
                         mandatory_col_idx = local_mandatory_col
                         session_col_idx = local_session_col
                         data_start_row = row_idx + 1
-                        # Skip over sub-header rows (rows with no digit in col 0)
+                        # Skip over sub-header/merged header rows (rows with no digit in col 0)
                         while data_start_row < len(table):
                             first_cell = str(table[data_start_row][0] or "").strip()
                             if re.search(r"\d", first_cell):
