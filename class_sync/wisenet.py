@@ -94,7 +94,227 @@ def _extract_userid(html: str) -> str:
     return ""
 
 
-# ── PDF parsing ───────────────────────────────────────────────────────────────
+# ── Google-token → Wisenet session (server-side SAML2) ───────────────────────
+
+def _ensure_fresh_token(google_creds: dict) -> str:
+    """
+    Return a valid Google access token, refreshing it if expired.
+    google_creds is the dict stored in the DB (token, refresh_token, client_id, etc.)
+    """
+    from google.oauth2.credentials import Credentials
+    from google.auth.transport.requests import Request
+
+    creds = Credentials(
+        token=google_creds.get("token"),
+        refresh_token=google_creds.get("refresh_token"),
+        token_uri=google_creds.get("token_uri", "https://oauth2.googleapis.com/token"),
+        client_id=google_creds.get("client_id"),
+        client_secret=google_creds.get("client_secret"),
+        scopes=google_creds.get("scopes"),
+    )
+    if not creds.valid:
+        creds.refresh(Request())
+    return creds.token
+
+
+def login_via_google_token(google_creds: dict) -> tuple[dict, str, str]:
+    """
+    Log into Wisenet silently using a stored Google OAuth credential dict.
+
+    This is a fully server-side flow — no browser popup, no display, no
+    cookie pasting. Works on Render and any headless environment.
+
+    Flow:
+      1. Refresh the Google access token if needed
+      2. Call Google's OAuthLogin endpoint to convert the OAuth token
+         into browser-style Google session cookies (SID, HSID, etc.)
+      3. Use those Google cookies to navigate to Wisenet's SAML2 SSO URL
+      4. Google auto-authenticates (no user interaction needed because we
+         already have a valid Google session) and returns an HTML form
+         containing a SAMLResponse assertion
+      5. POST the SAMLResponse to Wisenet's ACS (Assertion Consumer Service)
+      6. Wisenet validates and sets MoodleSession cookie — we're in!
+
+    Returns:
+        (cookies_dict, sesskey, userid)
+    """
+    sess = requests.Session()
+    sess.headers.update({
+        "User-Agent": (
+            "Mozilla/5.0 (Windows NT 10.0; Win64; x64) "
+            "AppleWebKit/537.36 (KHTML, like Gecko) "
+            "Chrome/120.0.0.0 Safari/537.36"
+        ),
+        "Accept-Language": "en-US,en;q=0.9",
+    })
+
+    # ── Step 1: get a fresh access token ─────────────────────────────────────
+    try:
+        access_token = _ensure_fresh_token(google_creds)
+    except Exception as exc:
+        raise RuntimeError(
+            f"Could not refresh Google token: {exc}. "
+            "Please reconnect Google Calendar first."
+        ) from exc
+
+    # ── Step 2: OAuthLogin — convert OAuth token → Google session cookies ─────
+    # This endpoint is used by Chrome browser sync, oauth2l, etc.
+    try:
+        uber_r = sess.get(
+            "https://accounts.google.com/OAuthLogin",
+            params={"source": "ChromiumBrowser", "issueuberauth": "1"},
+            headers={"Authorization": f"Bearer {access_token}"},
+            timeout=15,
+        )
+        uber_r.raise_for_status()
+        uberauth = uber_r.text.strip()
+        if not uberauth:
+            raise RuntimeError("OAuthLogin returned empty uber-auth token")
+    except Exception as exc:
+        raise RuntimeError(f"Google OAuthLogin step failed: {exc}") from exc
+
+    try:
+        sess.get(
+            "https://accounts.google.com/MergeSession",
+            params={
+                "uberauth": uberauth,
+                "continue": "https://accounts.google.com/",
+                "source": "ChromiumBrowser",
+            },
+            timeout=15,
+        )
+    except Exception as exc:
+        raise RuntimeError(f"Google MergeSession step failed: {exc}") from exc
+    # sess.cookies now holds SID, HSID, SSID, APISID, SAPISID, SIDCC...
+
+    # ── Step 3: navigate Wisenet login → find SSO URL ─────────────────────────
+    try:
+        login_r = sess.get(LOGIN_URL, allow_redirects=True, timeout=20)
+        login_r.raise_for_status()
+    except Exception as exc:
+        raise RuntimeError(f"Could not reach Wisenet login page: {exc}") from exc
+
+    # Find the SAML2/SSO button URL in the page
+    saml_url: str | None = None
+    for pattern in [
+        r'href="([^"]*auth/saml2[^"]*)"',
+        r'href="([^"]*sso[^"]*)"',
+        r'href="([^"]*google[^"]*)"',
+    ]:
+        m = re.search(pattern, login_r.text, re.I)
+        if m:
+            href = m.group(1)
+            saml_url = WISENET_BASE + href if href.startswith("/") else href
+            break
+
+    # Also try grabbing any Google SSO link from anchors
+    if not saml_url:
+        for m in re.finditer(r'<a[^>]+href="([^"]+)"[^>]*>', login_r.text, re.I):
+            href = m.group(1)
+            if any(kw in href.lower() for kw in ("saml", "sso", "google", "oauth")):
+                saml_url = WISENET_BASE + href if href.startswith("/") else href
+                break
+
+    if not saml_url:
+        raise RuntimeError(
+            "Could not find the Google SSO button on the Wisenet login page. "
+            "The page structure may have changed."
+        )
+
+    logger.info("Wisenet SSO URL: %s", saml_url)
+
+    # ── Step 4: follow SAML2 flow — Google auto-authenticates ─────────────────
+    try:
+        saml_r = sess.get(saml_url, allow_redirects=True, timeout=30)
+    except Exception as exc:
+        raise RuntimeError(f"SAML2 redirect failed: {exc}") from exc
+
+    # Google should return an auto-submitting HTML form with SAMLResponse
+    saml_response: str | None = None
+    relay_state: str | None = None
+    acs_url: str | None = None
+
+    # Try to find the SAMLResponse form in the response chain
+    for page in [saml_r]:
+        form_m = re.search(
+            r'<form[^>]+action="([^"]+)"[^>]*>(.*?)</form>',
+            page.text,
+            re.S | re.I,
+        )
+        if form_m:
+            acs_url = form_m.group(1)
+            form_body = form_m.group(2)
+            for inp in re.finditer(
+                r'<input[^>]+name="([^"]+)"[^>]+value="([^"]*)"',
+                form_body,
+                re.I,
+            ):
+                name, val = inp.group(1), inp.group(2)
+                if name == "SAMLResponse":
+                    saml_response = val
+                elif name == "RelayState":
+                    relay_state = val
+            if saml_response:
+                break
+
+    if not saml_response or not acs_url:
+        # Check if we're already on Wisenet (sometimes SSO skips the form)
+        wisenet_cookies_now = {
+            c.name: c.value
+            for c in sess.cookies
+            if "wisenet.spjimr.org" in (c.domain or "")
+        }
+        if wisenet_cookies_now.get("MoodleSession"):
+            logger.info("SSO completed without explicit SAMLResponse POST (session already set)")
+        else:
+            raise RuntimeError(
+                "SAML2 flow did not produce a SAMLResponse. "
+                "Google may have shown an account picker or consent screen — "
+                "please reconnect Google Calendar to re-authorise, then try again."
+            )
+    else:
+        # ── Step 5: POST SAMLResponse to Wisenet ACS ──────────────────────────
+        post_data: dict[str, str] = {"SAMLResponse": saml_response}
+        if relay_state:
+            post_data["RelayState"] = relay_state
+
+        try:
+            final_r = sess.post(acs_url, data=post_data, allow_redirects=True, timeout=20)
+            final_r.raise_for_status()
+        except Exception as exc:
+            raise RuntimeError(f"SAML2 ACS POST failed: {exc}") from exc
+
+    # ── Step 6: collect Wisenet session cookies + sesskey + userid ────────────
+    wisenet_cookies = {
+        c.name: c.value
+        for c in sess.cookies
+        if "wisenet.spjimr.org" in (c.domain or "")
+    }
+    if not wisenet_cookies.get("MoodleSession"):
+        raise RuntimeError(
+            "Wisenet login did not produce a MoodleSession cookie. "
+            "The SSO flow may have failed silently."
+        )
+
+    # Navigate to /my/ to get sesskey and userid reliably
+    try:
+        my_r = sess.get(f"{WISENET_BASE}/my/", allow_redirects=True, timeout=20)
+        html = my_r.text
+    except Exception:
+        html = ""
+
+    try:
+        sesskey = _extract_sesskey(html)
+    except RuntimeError:
+        sesskey = ""
+    userid = _extract_userid(html)
+
+    logger.info(
+        "Wisenet login via Google token: userid=%s, sesskey=%s…, cookies=%s",
+        userid, sesskey[:8] if sesskey else "", list(wisenet_cookies.keys()),
+    )
+    return wisenet_cookies, sesskey, userid
+
 
 def parse_mandatory_sessions_from_pdf(pdf_bytes: bytes, course_shortname: str) -> MandatorySessionInfo:
     """

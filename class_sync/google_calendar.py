@@ -8,7 +8,12 @@ from urllib.parse import parse_qs, urlparse
 from .models import CALENDAR_NAME
 
 
-SCOPES = ["https://www.googleapis.com/auth/calendar"]
+SCOPES = [
+    "https://www.googleapis.com/auth/calendar",
+    "openid",
+    "https://www.googleapis.com/auth/userinfo.email",
+    "https://www.googleapis.com/auth/userinfo.profile",
+]
 
 
 @dataclass
@@ -49,7 +54,7 @@ class GoogleCalendarClient:
         url, state = flow.authorization_url(
             access_type="offline",
             include_granted_scopes="true",
-            prompt="consent",
+            prompt="select_account consent",  # force account picker + re-consent for new scopes
         )
         return url, state
 
@@ -75,6 +80,20 @@ class GoogleCalendarClient:
         os.environ.setdefault("OAUTHLIB_INSECURE_TRANSPORT", "1")
         flow.fetch_token(code=code)
         creds = flow.credentials
+
+        # Try to get the user's email from the ID token (if present)
+        email = ""
+        try:
+            import json, base64
+            if creds.id_token:
+                # JWT payload is the second part, base64-encoded
+                payload_b64 = creds.id_token.split(".")[1]
+                padding = 4 - len(payload_b64) % 4
+                payload = json.loads(base64.b64decode(payload_b64 + "=" * padding))
+                email = payload.get("email", "")
+        except Exception:
+            pass
+
         return {
             "token": creds.token,
             "refresh_token": creds.refresh_token,
@@ -82,6 +101,7 @@ class GoogleCalendarClient:
             "client_id": creds.client_id,
             "client_secret": creds.client_secret,
             "scopes": list(creds.scopes or SCOPES),
+            "email": email,
         }
 
     def sync(self, event_payloads: list[dict]) -> SyncResult:
