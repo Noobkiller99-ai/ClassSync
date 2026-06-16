@@ -110,6 +110,16 @@ def create_app(test_config: dict | None = None) -> Flask:
                 raw = creds.get("username", "").split("@")[0]
                 username = raw.replace(".", " ").title()
 
+        # Ensure wisenet_state is set for the alternative copy-paste script
+        wisenet_state = get_setting(db, tok, "wisenet_state", None)
+        if not wisenet_state:
+            import secrets
+            wisenet_state = secrets.token_urlsafe(24)
+            set_setting(db, tok, "wisenet_state", wisenet_state)
+
+        process_url = url_for("wisenet_ingest", _external=True)
+        done_url = url_for("wisenet_sync_done", _external=True)
+
         event_groups = _group_events(events_raw)
         return render_template(
             "index.html",
@@ -125,6 +135,9 @@ def create_app(test_config: dict | None = None) -> Flask:
             username=username,
             sample_mode=app.config["USE_SAMPLE_TCS"],
             admin_enabled=bool(app.config["ADMIN_TOKEN"]),
+            wisenet_state=wisenet_state,
+            process_url=process_url,
+            done_url=done_url,
         )
 
     @app.post("/tcs/login")
@@ -394,12 +407,23 @@ def create_app(test_config: dict | None = None) -> Flask:
 </html>"""
         return html, 200, {"Content-Type": "text/html; charset=utf-8"}
 
-    @app.post("/wisenet/ingest")
+    @app.route("/wisenet/ingest", methods=["POST", "OPTIONS"])
     def wisenet_ingest():
         """
         Receives raw PDF bytes from the JS bridge, parses mandatory sessions,
         saves them to the database, and re-applies flags.
+        Supports cross-origin requests from Wisenet dashboard.
         """
+        from flask import jsonify
+        
+        # Handle CORS preflight
+        if request.method == "OPTIONS":
+            res = app.make_response(("", 204))
+            res.headers["Access-Control-Allow-Origin"] = "*"
+            res.headers["Access-Control-Allow-Methods"] = "POST, OPTIONS"
+            res.headers["Access-Control-Allow-Headers"] = "Content-Type"
+            return res
+
         from .wisenet import parse_mandatory_sessions_from_pdf
         import base64
 
@@ -415,10 +439,14 @@ def create_app(test_config: dict | None = None) -> Flask:
         # Validate state (CSRF protection)
         stored_state = get_setting(db, tok, "wisenet_state", None)
         if not stored_state or state != stored_state:
-            return {"ok": False, "error": "Session expired or invalid state."}
+            res_err = jsonify({"ok": False, "error": "Session expired or invalid state."})
+            res_err.headers["Access-Control-Allow-Origin"] = "*"
+            return res_err, 400
 
         if not pdf_b64 or not course_code:
-            return {"ok": False, "error": "Missing PDF data."}
+            res_err = jsonify({"ok": False, "error": "Missing PDF data."})
+            res_err.headers["Access-Control-Allow-Origin"] = "*"
+            return res_err, 400
 
         # Mark wisenet as connected by storing the sesskey/dummy token
         if sesskey:
@@ -437,12 +465,18 @@ def create_app(test_config: dict | None = None) -> Flask:
                 # Re-apply to existing events immediately
                 _reapply_mandatory_flags(app, tok, current_sessions)
                 
-                return {"ok": True, "count": len(session_info.mandatory_sessions)}
+                res_ok = jsonify({"ok": True, "count": len(session_info.mandatory_sessions)})
+                res_ok.headers["Access-Control-Allow-Origin"] = "*"
+                return res_ok
                 
-            return {"ok": True, "count": 0}
+            res_empty = jsonify({"ok": True, "count": 0})
+            res_empty.headers["Access-Control-Allow-Origin"] = "*"
+            return res_empty
         except Exception as e:
             logger.error("Failed to parse PDF for %s: %s", course_code, e)
-            return {"ok": False, "error": str(e)}
+            res_fail = jsonify({"ok": False, "error": str(e)})
+            res_fail.headers["Access-Control-Allow-Origin"] = "*"
+            return res_fail, 500
 
     @app.get("/wisenet/sync_done")
     def wisenet_sync_done():

@@ -843,3 +843,65 @@ code {
 }
 .link-accent { color: #f87171; text-decoration: underline; }
 .link-accent:hover { color: #fca5a5; }
+
+/* Wisenet Alternative Connection section */
+.wisenet-alternative {
+  border-top: 1px solid rgba(239, 68, 68, 0.12);
+  background: rgba(0, 0, 0, 0.2);
+  padding: 18px 24px;
+}
+.wisenet-alternative summary {
+  font-size: 13px;
+  font-weight: 700;
+  color: #f87171;
+  cursor: pointer;
+  user-select: none;
+  outline: none;
+  transition: color 0.2s;
+}
+.wisenet-alternative summary:hover {
+  color: #fca5a5;
+}
+.alternative-content {
+  margin-top: 12px;
+  font-size: 13px;
+  color: var(--text-dim);
+  display: flex;
+  flex-direction: column;
+  gap: 12px;
+}
+.alternative-content ol {
+  padding-left: 20px;
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+}
+.alternative-content li {
+  line-height: 1.6;
+}
+.code-container {
+  position: relative;
+  margin-top: 6px;
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+}
+.code-container textarea {
+  width: 100%;
+  height: 140px;
+  background: rgba(0, 0, 0, 0.35);
+  border: 1px solid rgba(239, 68, 68, 0.2);
+  border-radius: var(--r-sm);
+  color: #34d399;
+  font-family: 'JetBrains Mono', 'Fira Code', 'Courier New', monospace;
+  font-size: 11px;
+  padding: 12px;
+  resize: vertical;
+  outline: none;
+  transition: border-color 0.2s;
+}
+.code-container textarea:focus {
+  border-color: rgba(239, 68, 68, 0.5);
+  box-shadow: 0 0 0 3px rgba(239, 68, 68, 0.08);
+}
+
