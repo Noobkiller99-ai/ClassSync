@@ -113,6 +113,9 @@ class GoogleCalendarClient:
                 )
             return SyncResult("dry-run-spjimr-timetable", True, len(event_payloads), True, event_ids)
 
+        import logging
+        logger = logging.getLogger(__name__)
+
         from google.oauth2.credentials import Credentials
         from googleapiclient.discovery import build
 
@@ -124,17 +127,63 @@ class GoogleCalendarClient:
             })
         service = build("calendar", "v3", credentials=credentials)
         calendar_id, created = self._ensure_calendar(service)
+
+        # Retrieve existing calendar events to avoid creating duplicates
+        existing_by_uid = {}
+        existing_by_time_title = {}
+        try:
+            page_token = None
+            while True:
+                events_result = service.events().list(
+                    calendarId=calendar_id,
+                    pageToken=page_token,
+                    singleEvents=True,
+                    maxResults=250
+                ).execute()
+                for item in events_result.get("items", []):
+                    # Check private extended properties for our custom unique ID
+                    uid = item.get("extendedProperties", {}).get("private", {}).get("classSyncUid")
+                    if uid:
+                        existing_by_uid[uid] = item["id"]
+
+                    # Also index by time and title to catch events synced without private properties
+                    start_dt = item.get("start", {}).get("dateTime")
+                    summary = item.get("summary", "")
+                    if start_dt and summary:
+                        # Extract the first 19 chars to normalize starts_at (ignore timezone suffixes)
+                        # e.g. "2026-06-09T10:40:00+05:30" -> "2026-06-09T10:40:00"
+                        norm_start = start_dt[:19]
+                        norm_title = summary.replace("🔴 MANDATORY: ", "").strip()
+                        existing_by_time_title[(norm_title, norm_start)] = item["id"]
+                page_token = events_result.get("nextPageToken")
+                if not page_token:
+                    break
+        except Exception as e:
+            logger.warning("Failed to list existing calendar events: %s", e)
+
         imported = 0
         for event in event_payloads:
             body = {key: value for key, value in event.items() if key not in {"uid", "synced_event_id"}}
+            uid = event["uid"]
             google_id = event.get("synced_event_id")
+
+            # Duplicate prevention check
+            if not google_id:
+                if uid in existing_by_uid:
+                    google_id = existing_by_uid[uid]
+                else:
+                    starts_at_iso = event["start"]["dateTime"][:19]
+                    norm_title = event["summary"].replace("🔴 MANDATORY: ", "").strip()
+                    if (norm_title, starts_at_iso) in existing_by_time_title:
+                        google_id = existing_by_time_title[(norm_title, starts_at_iso)]
+
             if google_id:
                 try:
                     service.events().update(
                         calendarId=calendar_id, eventId=google_id, body=body
                     ).execute()
                 except Exception:
-                    # Event may have been deleted manually; re-insert it.
+                    # Event may have been deleted manually on Google Calendar; re-insert it.
                     created_event = service.events().insert(
                         calendarId=calendar_id, body=body
                     ).execute()
@@ -144,7 +193,7 @@ class GoogleCalendarClient:
                     calendarId=calendar_id, body=body
                 ).execute()
                 google_id = created_event["id"]
-            event_ids[event["uid"]] = google_id
+            event_ids[uid] = google_id
             imported += 1
         return SyncResult(calendar_id, created, imported, False, event_ids)
 

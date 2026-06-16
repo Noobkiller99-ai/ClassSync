@@ -172,3 +172,89 @@ def test_wisenet_upload_and_global_sharing(tmp_path):
     assert sessions["FIN521"] == [1, 3, 5]
 
 
+def test_google_calendar_duplicate_prevention_and_color():
+    from unittest.mock import MagicMock, patch
+    from class_sync.google_calendar import GoogleCalendarClient
+
+    # Set up mock events list response from Google Calendar list() call
+    mock_item_1 = {
+        "id": "existing-google-id-1",
+        "summary": "🔴 MANDATORY: Management of Change",
+        "start": {"dateTime": "2026-06-09T10:40:00+05:30"},
+        "extendedProperties": {
+            "private": {
+                "classSyncUid": "uid-1"
+            }
+        }
+    }
+    # Item 2 matched by start time and normalized summary, no classSyncUid in private properties
+    mock_item_2 = {
+        "id": "existing-google-id-2",
+        "summary": "Financial Innovations & Fintech",
+        "start": {"dateTime": "2026-06-10T10:40:00+05:30"}
+    }
+    
+    mock_service = MagicMock()
+    mock_service.calendarList().list().execute.return_value = {"items": [{"id": "primary", "summary": "SPJIMR Timetable"}]}
+    
+    # Mock listing call returns mock_item_1 and mock_item_2
+    mock_service.events().list().execute.side_effect = [
+        {"items": [mock_item_1, mock_item_2], "nextPageToken": None}
+    ]
+
+    client = GoogleCalendarClient(credentials={"token": "dummy"})
+
+    # Payloads to sync
+    payloads = [
+        {
+            "uid": "uid-1",
+            "summary": "🔴 MANDATORY: Management of Change",
+            "start": {"dateTime": "2026-06-09T10:40:00"},
+            "end": {"dateTime": "2026-06-09T11:50:00"},
+            "colorId": "11",
+            "extendedProperties": {"private": {"classSyncUid": "uid-1"}}
+        },
+        {
+            "uid": "uid-2",
+            "summary": "Financial Innovations & Fintech",
+            "start": {"dateTime": "2026-06-10T10:40:00"},
+            "end": {"dateTime": "2026-06-10T11:50:00"},
+            "extendedProperties": {"private": {"classSyncUid": "uid-2"}}
+        },
+        {
+            "uid": "uid-3",
+            "summary": "Business & Society",
+            "start": {"dateTime": "2026-06-11T14:30:00"},
+            "end": {"dateTime": "2026-06-11T15:40:00"},
+            "extendedProperties": {"private": {"classSyncUid": "uid-3"}}
+        }
+    ]
+
+    with patch("googleapiclient.discovery.build", return_value=mock_service):
+        result = client.sync(payloads)
+        
+        # Verify result mappings
+        assert result.event_ids["uid-1"] == "existing-google-id-1"  # Matched by classSyncUid
+        assert result.event_ids["uid-2"] == "existing-google-id-2"  # Matched by normalized summary & start time
+        assert result.event_ids["uid-3"] != "existing-google-id-1"  # New event inserted
+        assert result.event_ids["uid-3"] != "existing-google-id-2"
+
+        # Verify update was called for existing-google-id-1 and existing-google-id-2
+        # Verify event payload bodies exclude non-google fields like uid and synced_event_id
+        body_1 = {k: v for k, v in payloads[0].items() if k not in {"uid", "synced_event_id"}}
+        body_2 = {k: v for k, v in payloads[1].items() if k not in {"uid", "synced_event_id"}}
+        body_3 = {k: v for k, v in payloads[2].items() if k not in {"uid", "synced_event_id"}}
+
+        mock_service.events().update.assert_any_call(
+            calendarId="primary", eventId="existing-google-id-1", body=body_1
+        )
+        mock_service.events().update.assert_any_call(
+            calendarId="primary", eventId="existing-google-id-2", body=body_2
+        )
+        # Verify insert was called for new event
+        mock_service.events().insert.assert_any_call(
+            calendarId="primary", body=body_3
+        )
+
+
+

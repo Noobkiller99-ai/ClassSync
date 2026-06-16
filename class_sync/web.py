@@ -820,6 +820,7 @@ def _reapply_mandatory_flags(
     from .models import TimetableEvent
     from datetime import datetime as _DT
     updated: list[dict] = []
+    updated_events: list[TimetableEvent] = []
     for e in events_raw:
         code = (e.get("course_code") or "").split("-")[0].strip().upper()
         sess = e.get("session_number", "")
@@ -838,7 +839,26 @@ def _reapply_mandatory_flags(
         else:
             e_updated["title"] = subject
         updated.append(e_updated)
+
+        # Reconstruct TimetableEvent for database payload persistence
+        starts_at = _DT.fromisoformat(e["starts_at"])
+        ends_at = _DT.fromisoformat(e["ends_at"])
+        updated_events.append(
+            TimetableEvent(
+                uid=e["uid"],
+                subject_name=subject,
+                course_code=e.get("course_code", ""),
+                faculty=e.get("faculty", ""),
+                classroom=e.get("classroom", ""),
+                starts_at=starts_at,
+                ends_at=ends_at,
+                status=e.get("status", ""),
+                mandatory=is_mandatory,
+                session_number=sess,
+            )
+        )
     set_setting(db, user_token, "preview_events", updated)
+    save_events(db, user_token, updated_events)
 
 
 def _extract_course_code(filename: str, pdf_bytes: bytes) -> str | None:
