@@ -406,10 +406,12 @@ def parse_mandatory_sessions_from_pdf(pdf_bytes: bytes, course_shortname: str) -
                                 merged_cells[ci] += " " + val
                     
                     merged_cells = [c.strip().lower() for c in merged_cells]
+                    # Normalize by removing spaces to handle split words like "mandator y"
+                    merged_cells_norm = [c.replace(" ", "") for c in merged_cells]
                     
                     # Detect header row: a merged column must contain "mandatory" AND "session"
-                    if any("mandatory" in c and "session" in c for c in merged_cells):
-                        for ci, cell in enumerate(merged_cells):
+                    if any("mandatory" in c and "session" in c for c in merged_cells_norm):
+                        for ci, cell in enumerate(merged_cells_norm):
                             if "mandatory" in cell and "session" in cell:
                                 local_mandatory_col = ci
                                 in_session_table = True
@@ -453,7 +455,24 @@ def parse_mandatory_sessions_from_pdf(pdf_bytes: bytes, course_shortname: str) -
                         local_session_col = 0
 
                     session_cell = cells[local_session_col].strip()
-                    mandatory_cell = cells[local_mandatory_col].strip().lower()
+                    
+                    # Resolve mandatory cell by looking at the target column and adjacent columns to handle shifted cells
+                    mandatory_cell = ""
+                    candidates = [local_mandatory_col]
+                    for offset in [1, -1, 2, -2]:
+                        col_idx = local_mandatory_col + offset
+                        if 0 <= col_idx < len(cells):
+                            candidates.append(col_idx)
+                    
+                    for col_idx in candidates:
+                        val = cells[col_idx].strip().lower()
+                        # Only accept if it contains mandatory indicators/values to avoid false positives
+                        if val and (any(kw in val for kw in ["yes", "*", "no", "n/a", "na"]) or val in {"y", "n"}):
+                            mandatory_cell = val
+                            break
+                            
+                    if not mandatory_cell and local_mandatory_col < len(cells):
+                        mandatory_cell = cells[local_mandatory_col].strip().lower()
 
                     # Skip rows with no session number
                     if not re.search(r"\d", session_cell):
