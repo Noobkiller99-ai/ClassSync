@@ -283,18 +283,24 @@
               <form method="post" action="{{ url_for('wisenet_reset') }}">
                 <button type="submit" class="btn btn-danger btn-sm">Disconnect</button>
               </form>
-            {% else %}
+            {% elif is_local %}
               <form method="post" action="{{ url_for('wisenet_connect') }}" onsubmit="startLoading(this, 'Opening browser window for Google sign-in… Please select your SPJIMR account.')">
                 <button type="submit" class="btn btn-wisenet" id="wisenetConnectBtn">
                   <span class="btn-label">🔗 Connect Wisenet</span>
                 </button>
               </form>
+            {% else %}
+              {# Cloud: the connect form is inline in the wisenet-how panel below #}
+              <span class="wisenet-cloud-hint">Paste your session token below ↓</span>
             {% endif %}
           </div>
         </div>
 
-        {# No credentials needed — a browser popup handles Google SSO #}
+        {# ── Connect flow: differs by local vs cloud ── #}
         {% if not wisenet_ready %}
+
+        {% if is_local %}
+        {# LOCAL: Playwright headed browser popup #}
         <div class="wisenet-how">
           <div class="wisenet-how-step">
             <span class="wisenet-step-num">1</span>
@@ -308,8 +314,35 @@
             <span class="wisenet-step-num">3</span>
             <span>Mandatory sessions are extracted automatically from Course Outline PDFs</span>
           </div>
-          <p class="security-note">&#x1f512; No password is ever stored — only session cookies, encrypted at rest.</p>
+          <p class="security-note">&#x1f512; No password stored — only session cookies, encrypted at rest.</p>
         </div>
+
+        {% else %}
+        {# CLOUD: Cookie paste flow (Playwright can't open a popup on a server) #}
+        <div class="wisenet-how">
+          <div class="wisenet-how-step">
+            <span class="wisenet-step-num">1</span>
+            <span>Open <a href="https://wisenet.spjimr.org" target="_blank" rel="noopener" class="link-accent">wisenet.spjimr.org</a> in a new tab and sign in with your SPJIMR Google account</span>
+          </div>
+          <div class="wisenet-how-step">
+            <span class="wisenet-step-num">2</span>
+            <span>Press <kbd>F12</kbd> → <strong>Application</strong> → <strong>Cookies</strong> → <code>https://wisenet.spjimr.org</code> → copy the value of <code>MoodleSession</code></span>
+          </div>
+          <div class="wisenet-how-step">
+            <span class="wisenet-step-num">3</span>
+            <span>Paste it below and click <strong>Connect</strong></span>
+          </div>
+          <form method="post" action="{{ url_for('wisenet_connect') }}"
+                onsubmit="startLoading(this, 'Verifying Wisenet session…')" class="wisenet-paste-form">
+            <input id="moodle_session" name="moodle_session" type="text"
+              placeholder="Paste MoodleSession cookie value here"
+              autocomplete="off" spellcheck="false" required class="mono-input">
+            <button type="submit" class="btn btn-wisenet">Connect →</button>
+          </form>
+          <p class="security-note">&#x1f512; Only the session token is stored, encrypted. It expires automatically — no password ever stored.</p>
+        </div>
+        {% endif %}
+
         {% endif %}
 
         {# Show mandatory session breakdown per course #}

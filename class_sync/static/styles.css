@@ -796,4 +796,50 @@ details[open] .setup-summary .chevron { transform: rotate(180deg); }
   .wisenet-panel-header { flex-direction: column; align-items: flex-start; }
   .wisenet-form-row { flex-direction: column; }
   .wisenet-form-row .form-field { width: 100%; }
+  .wisenet-paste-form { flex-direction: column; }
+  .wisenet-paste-form .mono-input { width: 100%; }
 }
+
+/* Cloud cookie-paste form */
+.wisenet-paste-form {
+  display: flex; align-items: stretch; gap: 10px;
+  margin-top: 12px; flex-wrap: wrap;
+}
+
+.mono-input {
+  flex: 1; min-width: 200px;
+  font-family: 'JetBrains Mono', 'Fira Code', 'Courier New', monospace;
+  font-size: 12px;
+  background: rgba(255,255,255,.04);
+  border: 1px solid rgba(239,68,68,.25);
+  border-radius: var(--r-sm);
+  color: var(--text);
+  padding: 10px 14px;
+  outline: none;
+  transition: border-color .2s;
+}
+.mono-input:focus {
+  border-color: rgba(239,68,68,.6);
+  box-shadow: 0 0 0 3px rgba(239,68,68,.08);
+}
+.mono-input::placeholder { color: var(--text-muted); opacity: .7; }
+
+.wisenet-cloud-hint {
+  font-size: 12px; color: #f87171; font-weight: 600;
+  display: flex; align-items: center;
+  animation: mandatoryPulse 2s ease-in-out infinite;
+}
+
+/* Keyboard / code style in instructions */
+kbd {
+  display: inline-block; font-size: 11px; font-family: monospace;
+  background: rgba(255,255,255,.08); border: 1px solid rgba(255,255,255,.15);
+  border-radius: 4px; padding: 1px 6px; color: var(--text);
+}
+code {
+  font-family: 'JetBrains Mono', 'Fira Code', monospace;
+  font-size: 11px; color: #93c5fd;
+  background: rgba(147,197,253,.08); border-radius: 4px; padding: 1px 5px;
+}
+.link-accent { color: #f87171; text-decoration: underline; }
+.link-accent:hover { color: #fca5a5; }

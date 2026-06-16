@@ -48,6 +48,9 @@ from .tcs import (
 
 
 def create_app(test_config: dict | None = None) -> Flask:
+    # True when running locally (not on Render or any cloud with RENDER env set)
+    IS_LOCAL = not os.getenv("RENDER")
+
     app = Flask(__name__, instance_relative_config=True)
     # Respect X-Forwarded-Proto from Render/any reverse proxy so OAuth
     # callback URLs are built with https:// in production.
@@ -108,12 +111,13 @@ def create_app(test_config: dict | None = None) -> Flask:
         return render_template(
             "index.html",
             events=events_raw,
-            event_groups=event_groups,
             google_ready=google_ready,
             google_configured=app.config["GOOGLE_CONFIGURED"],
             tcs_ready=tcs_ready,
             wisenet_ready=wisenet_ready,
             mandatory_data=mandatory_data,
+            is_local=IS_LOCAL,
+            event_groups=event_groups,
             synced=synced,
             username=username,
             sample_mode=app.config["USE_SAMPLE_TCS"],
@@ -166,38 +170,77 @@ def create_app(test_config: dict | None = None) -> Flask:
     @app.post("/wisenet/connect")
     def wisenet_connect():
         """
-        Launch a headed browser popup so the user can sign in via Google SSO.
-        No email or password is ever collected — the user simply clicks their
-        SPJIMR account in the browser window that opens on their desktop.
-        After login, only session cookies are stored (encrypted). No passwords.
+        Two modes depending on whether running locally or on cloud (Render):
+
+        LOCAL: Open a headed Playwright browser popup — user clicks their
+               SPJIMR Google account. No password ever entered.
+
+        CLOUD: Accept a pasted MoodleSession cookie value that the user
+               copies from their own browser after logging into Wisenet.
+               No Playwright, no password, no display needed.
         """
         tok = _user_token()
         db = app.config["DATABASE"]
-        # Extract an email hint from the existing Google OAuth token (if any)
-        # so Playwright can pre-fill the Google account email field for convenience.
-        google_creds = get_setting(db, tok, "google_credentials", None)
-        hint_email = ""
-        if google_creds and isinstance(google_creds, dict):
-            # google_credentials may contain the user's email via token info
-            hint_email = (
-                google_creds.get("email")
-                or google_creds.get("id_token_email")
-                or ""
-            )
-        try:
-            from .wisenet import login_with_browser_popup, build_requests_session
-            cookies, sesskey, userid = login_with_browser_popup(hint_email=hint_email)
-        except Exception as exc:
-            flash(f"Wisenet login failed: {exc}", "error")
-            return redirect(url_for("index"))
-        # Store cookies (encrypted) — no passwords ever stored
-        set_setting(db, tok, "wisenet_cookies", encrypt_json({
-            "cookies": cookies,
-            "sesskey": sesskey,
-            "userid": userid,
-        }))
-        # Immediately scrape mandatory sessions
-        return redirect(url_for("wisenet_sync"))
+
+        if IS_LOCAL:
+            # ── Local: headed browser popup ──────────────────────────────
+            google_creds = get_setting(db, tok, "google_credentials", None)
+            hint_email = ""
+            if google_creds and isinstance(google_creds, dict):
+                hint_email = (
+                    google_creds.get("email")
+                    or google_creds.get("id_token_email")
+                    or ""
+                )
+            try:
+                from .wisenet import login_with_browser_popup
+                cookies, sesskey, userid = login_with_browser_popup(hint_email=hint_email)
+            except Exception as exc:
+                flash(f"Wisenet login failed: {exc}", "error")
+                return redirect(url_for("index"))
+            set_setting(db, tok, "wisenet_cookies", encrypt_json({
+                "cookies": cookies,
+                "sesskey": sesskey,
+                "userid": userid,
+            }))
+            return redirect(url_for("wisenet_sync"))
+
+        else:
+            # ── Cloud: accept pasted MoodleSession cookie ─────────────────
+            moodle_session = request.form.get("moodle_session", "").strip()
+            if not moodle_session:
+                flash(
+                    "Please paste your Wisenet session token. "
+                    "Follow the instructions below to copy it from your browser.",
+                    "error",
+                )
+                return redirect(url_for("index"))
+            # Build a minimal cookies dict and try to fetch sesskey + userid
+            try:
+                from .wisenet import build_requests_session, WISENET_BASE, _extract_sesskey, _extract_userid
+                raw_cookies = {"MoodleSession": moodle_session}
+                sess = build_requests_session(raw_cookies)
+                resp = sess.get(f"{WISENET_BASE}/my/", timeout=20)
+                resp.raise_for_status()
+                # Check we actually landed on a logged-in page
+                if "login" in resp.url.lower() or "login" in resp.text[:500].lower():
+                    flash(
+                        "That session token has expired or is invalid. "
+                        "Please log into Wisenet again and copy a fresh token.",
+                        "error",
+                    )
+                    return redirect(url_for("index"))
+                sesskey = _extract_sesskey(resp.text) if resp.ok else ""
+                userid = _extract_userid(resp.text) if resp.ok else ""
+            except Exception as exc:
+                flash(f"Could not verify Wisenet session: {exc}", "error")
+                return redirect(url_for("index"))
+            set_setting(db, tok, "wisenet_cookies", encrypt_json({
+                "cookies": raw_cookies,
+                "sesskey": sesskey,
+                "userid": userid,
+            }))
+            return redirect(url_for("wisenet_sync"))
 
     # Keep old route name as alias for any bookmarked links
     app.add_url_rule("/wisenet/login", view_func=wisenet_connect, methods=["POST"])
