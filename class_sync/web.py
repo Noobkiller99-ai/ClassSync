@@ -90,7 +90,7 @@ def create_app(test_config: dict | None = None) -> Flask:
         events_raw: list[dict] = get_setting(db, tok, "preview_events", [])  # type: ignore[assignment]
         google_ready = bool(get_setting(db, tok, "google_credentials", None))
         tcs_ready = bool(get_setting(db, tok, "tcs_credentials_encrypted", None))
-        wisenet_ready = bool(get_setting(db, tok, "wisenet_credentials_encrypted", None))
+        wisenet_ready = bool(get_setting(db, tok, "wisenet_cookies", None))
         mandatory_data = get_mandatory_sessions(db, tok) if wisenet_ready else {}
         synced = bool(
             google_ready
@@ -154,7 +154,8 @@ def create_app(test_config: dict | None = None) -> Flask:
         delete_setting(db, tok, "tcs_credentials_encrypted")
         delete_setting(db, tok, "preview_events")
         delete_setting(db, tok, "google_credentials")
-        delete_setting(db, tok, "wisenet_credentials_encrypted")
+        delete_setting(db, tok, "wisenet_credentials_encrypted")  # legacy
+        delete_setting(db, tok, "wisenet_cookies")
         clear_events(db, tok)
         clear_mandatory_sessions(db, tok)
         flash("Session cleared. Enter your TCS iON credentials to start over.", "info")
@@ -162,46 +163,78 @@ def create_app(test_config: dict | None = None) -> Flask:
 
     # ── Wisenet (Moodle LMS) routes ───────────────────────────────────────────
 
-    @app.post("/wisenet/login")
-    def wisenet_login():
-        """Store Wisenet Google credentials and kick off mandatory session scrape."""
+    @app.post("/wisenet/connect")
+    def wisenet_connect():
+        """
+        Launch a headed browser popup so the user can sign in via Google SSO.
+        No email or password is ever collected — the user simply clicks their
+        SPJIMR account in the browser window that opens on their desktop.
+        After login, only session cookies are stored (encrypted). No passwords.
+        """
         tok = _user_token()
-        email = request.form.get("wisenet_email", "").strip()
-        password = request.form.get("wisenet_password", "")
-        if not email or not password:
-            flash("Please enter your SPJIMR email and password for Wisenet.", "error")
-            return redirect(url_for("index"))
         db = app.config["DATABASE"]
-        creds = {"email": email, "password": password}
-        set_setting(db, tok, "wisenet_credentials_encrypted", encrypt_json(creds))
-        # Immediately trigger a scrape
+        # Extract an email hint from the existing Google OAuth token (if any)
+        # so Playwright can pre-fill the Google account email field for convenience.
+        google_creds = get_setting(db, tok, "google_credentials", None)
+        hint_email = ""
+        if google_creds and isinstance(google_creds, dict):
+            # google_credentials may contain the user's email via token info
+            hint_email = (
+                google_creds.get("email")
+                or google_creds.get("id_token_email")
+                or ""
+            )
+        try:
+            from .wisenet import login_with_browser_popup, build_requests_session
+            cookies, sesskey, userid = login_with_browser_popup(hint_email=hint_email)
+        except Exception as exc:
+            flash(f"Wisenet login failed: {exc}", "error")
+            return redirect(url_for("index"))
+        # Store cookies (encrypted) — no passwords ever stored
+        set_setting(db, tok, "wisenet_cookies", encrypt_json({
+            "cookies": cookies,
+            "sesskey": sesskey,
+            "userid": userid,
+        }))
+        # Immediately scrape mandatory sessions
         return redirect(url_for("wisenet_sync"))
+
+    # Keep old route name as alias for any bookmarked links
+    app.add_url_rule("/wisenet/login", view_func=wisenet_connect, methods=["POST"])
 
     @app.post("/wisenet/sync")
     @app.get("/wisenet/sync")
     def wisenet_sync():
-        """Scrape Wisenet for mandatory sessions and re-apply flags to timetable."""
+        """Re-scrape Wisenet mandatory sessions using stored cookies."""
         tok = _user_token()
         db = app.config["DATABASE"]
-        encrypted = get_setting(db, tok, "wisenet_credentials_encrypted", None)
-        if not encrypted:
-            flash("Connect to Wisenet first.", "error")
+        # Try new cookie-based storage first, fall back to legacy credential storage
+        stored = get_setting(db, tok, "wisenet_cookies", None)
+        if stored:
+            session_data = decrypt_json(stored)
+        else:
+            # Legacy path: had credentials stored — prompt to reconnect
+            flash("Please reconnect Wisenet — click \"Connect Wisenet\" to open the login browser.", "info")
             return redirect(url_for("index"))
-        creds = decrypt_json(encrypted)
-        if not creds:
-            flash("Wisenet credentials could not be decrypted.", "error")
+        if not session_data:
+            flash("Wisenet session data could not be read. Please reconnect.", "error")
             return redirect(url_for("index"))
         try:
-            mandatory_data = _fetch_wisenet_mandatory_sessions(creds)
+            from .wisenet import build_client_from_cookies
+            client = build_client_from_cookies(
+                cookies=session_data["cookies"],
+                sesskey=session_data["sesskey"],
+                userid=session_data["userid"],
+            )
+            mandatory_data = client.get_all_mandatory_sessions()
         except Exception as exc:
             flash(f"Wisenet scrape failed: {exc}", "error")
             return redirect(url_for("index"))
         save_mandatory_sessions(db, tok, mandatory_data)
-        # Re-apply mandatory flags to existing timetable events
         _reapply_mandatory_flags(app, tok, mandatory_data)
         total = sum(len(v) for v in mandatory_data.values())
         flash(
-            f"Wisenet sync done — {len(mandatory_data)} courses scanned, "
+            f"Wisenet sync done \u2014 {len(mandatory_data)} courses scanned, "
             f"{total} mandatory sessions marked in red.",
             "success",
         )
@@ -211,9 +244,10 @@ def create_app(test_config: dict | None = None) -> Flask:
     def wisenet_reset():
         tok = _user_token()
         db = app.config["DATABASE"]
-        delete_setting(db, tok, "wisenet_credentials_encrypted")
+        delete_setting(db, tok, "wisenet_credentials_encrypted")  # legacy cleanup
+        delete_setting(db, tok, "wisenet_cookies")
         clear_mandatory_sessions(db, tok)
-        flash("Wisenet session cleared.", "info")
+        flash("Wisenet disconnected.", "info")
         return redirect(url_for("index"))
 
     @app.post("/preview")
@@ -425,10 +459,16 @@ def _group_events(events: list[dict]) -> list[dict]:
     return groups
 
 
-def _fetch_wisenet_mandatory_sessions(creds: dict) -> dict[str, list[int]]:
-    """Log into Wisenet via Playwright and scrape mandatory sessions from all courses."""
-    from .wisenet import login_and_build_client
-    client = login_and_build_client(creds["email"], creds["password"])
+def _fetch_wisenet_mandatory_sessions_from_cookies(
+    session_data: dict,
+) -> dict[str, list[int]]:
+    """Scrape Wisenet mandatory sessions using previously captured cookies."""
+    from .wisenet import build_client_from_cookies
+    client = build_client_from_cookies(
+        cookies=session_data["cookies"],
+        sesskey=session_data["sesskey"],
+        userid=session_data["userid"],
+    )
     return client.get_all_mandatory_sessions()
 
 

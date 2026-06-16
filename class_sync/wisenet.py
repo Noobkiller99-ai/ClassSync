@@ -399,38 +399,50 @@ class WisenetClient:
         return result
 
 
-# ── Playwright login ──────────────────────────────────────────────────────────
+# ── Playwright login — browser popup (no credentials required) ────────────────
 
-def login_with_playwright(email: str, password: str) -> tuple[dict, str, str]:
+def login_with_browser_popup(hint_email: str = "") -> tuple[dict, str, str]:
     """
-    Log into Wisenet using Google SSO via Playwright.
+    Log into Wisenet by opening a VISIBLE browser window where the user simply
+    clicks their SPJIMR Google account. No email or password is ever typed by
+    the automation — Google SSO handles authentication.
+
+    Args:
+        hint_email: optional email to pre-populate the Google account hint
+                    (e.g. from the existing Google Calendar OAuth token).
 
     Returns:
         (cookies_dict, sesskey, userid)
-    where cookies_dict maps cookie name → value for the authenticated session.
     """
     try:
-        from playwright.sync_api import sync_playwright, TimeoutError as PWTimeout
+        from playwright.sync_api import sync_playwright
     except ImportError:
-        raise RuntimeError("playwright is not installed. Run: pip install playwright && python -m playwright install chromium")
+        raise RuntimeError(
+            "playwright is not installed. "
+            "Run: pip install playwright && python -m playwright install chromium"
+        )
 
     with sync_playwright() as pw:
-        browser = pw.chromium.launch(headless=True)
+        # ── Headed mode: a real browser window opens on the user's desktop ──
+        browser = pw.chromium.launch(
+            headless=False,
+            args=["--start-maximized"],
+        )
         context = browser.new_context(
+            viewport=None,  # use the window size
             user_agent=(
                 "Mozilla/5.0 (Windows NT 10.0; Win64; x64) "
                 "AppleWebKit/537.36 (KHTML, like Gecko) "
                 "Chrome/120.0.0.0 Safari/537.36"
-            )
+            ),
         )
         page = context.new_page()
 
         try:
-            # 1. Navigate to Wisenet login
+            # ── Step 1: navigate to Wisenet login ────────────────────────────
             page.goto(LOGIN_URL, wait_until="networkidle", timeout=30_000)
 
-            # 2. If there's a "Login with Google" / SSO button, click it
-            # Moodle SAML2 typically shows a "Sign in with Google" button
+            # ── Step 2: click the Google SSO / SAML2 button ──────────────────
             sso_selectors = [
                 "a[href*='saml2']",
                 "a[href*='sso']",
@@ -445,7 +457,7 @@ def login_with_playwright(email: str, password: str) -> tuple[dict, str, str]:
             for sel in sso_selectors:
                 try:
                     elem = page.locator(sel).first
-                    if elem.is_visible(timeout=2000):
+                    if elem.is_visible(timeout=2_000):
                         elem.click()
                         sso_clicked = True
                         break
@@ -453,7 +465,6 @@ def login_with_playwright(email: str, password: str) -> tuple[dict, str, str]:
                     continue
 
             if not sso_clicked:
-                # Try finding any link that takes us to Google accounts
                 hrefs = page.eval_on_selector_all("a", "els => els.map(e => e.href)")
                 for href in hrefs:
                     if "google" in href.lower() or "saml" in href.lower():
@@ -461,28 +472,35 @@ def login_with_playwright(email: str, password: str) -> tuple[dict, str, str]:
                         sso_clicked = True
                         break
 
-            # 3. Handle Google sign-in
-            # Wait for Google's email input
-            page.wait_for_selector('input[type="email"]', timeout=20_000)
-            page.fill('input[type="email"]', email)
-            page.keyboard.press("Enter")
+            # ── Step 3: optionally pre-fill the Google account hint ──────────
+            # If an email hint is provided, try to fill the email field so the
+            # user just has to click "Next" / confirm — no typing needed.
+            if hint_email:
+                try:
+                    page.wait_for_selector('input[type="email"]', timeout=5_000)
+                    page.fill('input[type="email"]', hint_email)
+                    # Don't press Enter — let the user review and confirm
+                except Exception:
+                    pass  # Google may have skipped straight to account picker
 
-            # Wait for password field
-            page.wait_for_selector('input[type="password"]', timeout=15_000)
-            page.fill('input[type="password"]', password)
-            page.keyboard.press("Enter")
-
-            # 4. Wait for redirect back to Wisenet dashboard
-            page.wait_for_url(f"{WISENET_BASE}/**", timeout=30_000)
-
-            # 5. Wait for page to be fully loaded (dashboard or /my/)
+            # ── Step 4: wait for user to complete login (up to 3 minutes) ────
+            # The browser is visible; the user clicks their account and any
+            # 2FA / consent prompts. We just wait for the redirect back.
+            logger.info(
+                "Wisenet: waiting for user to select Google account in browser window…"
+            )
+            page.wait_for_url(f"{WISENET_BASE}/**", timeout=180_000)
             page.wait_for_load_state("networkidle", timeout=20_000)
 
-            # 6. Extract cookies
+            # ── Step 5: collect cookies ───────────────────────────────────────
             cookies = context.cookies()
-            cookies_dict = {c["name"]: c["value"] for c in cookies if "wisenet.spjimr.org" in c.get("domain", "")}
+            cookies_dict = {
+                c["name"]: c["value"]
+                for c in cookies
+                if "wisenet.spjimr.org" in c.get("domain", "")
+            }
 
-            # 7. Extract sesskey and userid from page HTML
+            # ── Step 6: extract sesskey + userid ──────────────────────────────
             html = page.content()
             try:
                 sesskey = _extract_sesskey(html)
@@ -491,21 +509,21 @@ def login_with_playwright(email: str, password: str) -> tuple[dict, str, str]:
             userid = _extract_userid(html)
 
             if not sesskey:
-                # Try navigating to /my/ to get sesskey
                 page.goto(f"{WISENET_BASE}/my/", wait_until="networkidle", timeout=20_000)
                 html = page.content()
                 sesskey = _extract_sesskey(html)
                 userid = _extract_userid(html) or userid
 
+            if not cookies_dict:
+                raise RuntimeError(
+                    "Login did not produce Wisenet session cookies. "
+                    "Please make sure you selected the correct SPJIMR account."
+                )
+
             return cookies_dict, sesskey, userid
 
         except Exception as exc:
-            # Take a screenshot for debugging
-            try:
-                page.screenshot(path="/tmp/wisenet_login_error.png")
-            except Exception:
-                pass
-            raise RuntimeError(f"Wisenet login failed: {exc}") from exc
+            raise RuntimeError(f"Wisenet browser login failed: {exc}") from exc
         finally:
             browser.close()
 
@@ -527,8 +545,18 @@ def build_requests_session(cookies: dict) -> requests.Session:
     return sess
 
 
-def login_and_build_client(email: str, password: str) -> WisenetClient:
-    """Full login flow: Playwright → requests session → WisenetClient."""
-    cookies, sesskey, userid = login_with_playwright(email, password)
+def build_client_from_cookies(cookies: dict, sesskey: str, userid: str) -> WisenetClient:
+    """Build a WisenetClient from already-captured cookies (no login needed)."""
     session = build_requests_session(cookies)
     return WisenetClient(session=session, sesskey=sesskey, userid=userid)
+
+
+def login_and_build_client(hint_email: str = "") -> WisenetClient:
+    """
+    Open a browser popup for Google SSO, capture cookies, return WisenetClient.
+    No credentials required — the user just clicks their SPJIMR account.
+    """
+    cookies, sesskey, userid = login_with_browser_popup(hint_email=hint_email)
+    session = build_requests_session(cookies)
+    return WisenetClient(session=session, sesskey=sesskey, userid=userid)
+

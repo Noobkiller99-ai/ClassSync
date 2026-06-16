@@ -277,41 +277,38 @@
           </div>
           <div class="wisenet-actions">
             {% if wisenet_ready %}
-              <form method="post" action="{{ url_for('wisenet_sync') }}" onsubmit="startLoading(this, 'Scanning Wisenet for mandatory sessions…')">
+              <form method="post" action="{{ url_for('wisenet_sync') }}" onsubmit="startLoading(this, 'Re-scanning Wisenet course outlines…')">
                 <button type="submit" class="btn btn-ghost btn-sm" id="wisenetSyncBtn">↻ Rescan</button>
               </form>
               <form method="post" action="{{ url_for('wisenet_reset') }}">
                 <button type="submit" class="btn btn-danger btn-sm">Disconnect</button>
               </form>
             {% else %}
-              <button type="button" class="btn btn-wisenet" onclick="toggleWisenetForm()" id="wisenetConnectBtn">
-                🔗 Connect Wisenet
-              </button>
+              <form method="post" action="{{ url_for('wisenet_connect') }}" onsubmit="startLoading(this, 'Opening browser window for Google sign-in… Please select your SPJIMR account.')">
+                <button type="submit" class="btn btn-wisenet" id="wisenetConnectBtn">
+                  <span class="btn-label">🔗 Connect Wisenet</span>
+                </button>
+              </form>
             {% endif %}
           </div>
         </div>
 
-        {# Wisenet login form (hidden by default) #}
+        {# No credentials needed — a browser popup handles Google SSO #}
         {% if not wisenet_ready %}
-        <div id="wisenetForm" class="wisenet-form" style="display:none">
-          <form method="post" action="{{ url_for('wisenet_login') }}" onsubmit="startLoading(this, 'Logging into Wisenet via Google SSO…')">
-            <div class="wisenet-form-row">
-              <div class="form-field">
-                <label for="wisenet_email">SPJIMR Email</label>
-                <input id="wisenet_email" name="wisenet_email" type="email"
-                  placeholder="yourname@spjimr.org" autocomplete="email" required>
-              </div>
-              <div class="form-field">
-                <label for="wisenet_password">Google Password</label>
-                <input id="wisenet_password" name="wisenet_password" type="password"
-                  placeholder="Your SPJIMR Google password" autocomplete="current-password" required>
-              </div>
-              <button type="submit" class="btn btn-wisenet" id="wisenetLoginBtn">
-                <span class="btn-label">Scan Wisenet →</span>
-              </button>
-            </div>
-            <p class="security-note">🔒 Credentials are encrypted. Login uses Google SSO in a headless browser.</p>
-          </form>
+        <div class="wisenet-how">
+          <div class="wisenet-how-step">
+            <span class="wisenet-step-num">1</span>
+            <span>Click <strong>Connect Wisenet</strong> above</span>
+          </div>
+          <div class="wisenet-how-step">
+            <span class="wisenet-step-num">2</span>
+            <span>A browser window opens — click your <strong>SPJIMR Google account</strong></span>
+          </div>
+          <div class="wisenet-how-step">
+            <span class="wisenet-step-num">3</span>
+            <span>Mandatory sessions are extracted automatically from Course Outline PDFs</span>
+          </div>
+          <p class="security-note">&#x1f512; No password is ever stored — only session cookies, encrypted at rest.</p>
         </div>
         {% endif %}
 
@@ -454,15 +451,6 @@
       }, 4500 + i * 600);
     });
 
-    /* ── Wisenet form toggle ────────────────────────────────── */
-    function toggleWisenetForm() {
-      var form = document.getElementById('wisenetForm');
-      var btn  = document.getElementById('wisenetConnectBtn');
-      if (!form) return;
-      var isOpen = form.style.display !== 'none';
-      form.style.display = isOpen ? 'none' : 'block';
-      if (btn) btn.textContent = isOpen ? '🔗 Connect Wisenet' : '✕ Cancel';
-    }
   </script>
 
 </body>
