@@ -451,6 +451,23 @@
     /* ── PDF Drag & Drop ───────────────────────────────────── */
     function submitPdfUpload(input) {
       if (input.files && input.files.length > 0) {
+        var totalSize = 0;
+        for (var i = 0; i < input.files.length; i++) {
+          totalSize += input.files[i].size;
+        }
+        // Vercel serverless function request body limit is 4.5MB
+        var maxLimit = 4.2 * 1024 * 1024; // 4.2MB limit leaving safety margin for payload wrappers
+        if (totalSize > maxLimit) {
+          alert("⚠️ Upload Payload Too Large!\n\n" +
+                "Vercel serverless hosting restricts upload payloads to 4.5MB. Your selected file(s) total " + 
+                (totalSize / (1024 * 1024)).toFixed(2) + "MB.\n\n" +
+                "How to fix this:\n" +
+                "1. Extract Session Plan: Open the PDF and choose Print -> Save as PDF, selecting only the pages containing the Session Plan table (typically 1-3 pages, reducing size to <100KB).\n" +
+                "2. Upload one by one instead of multiple files at once.\n" +
+                "3. Compress the PDF using a free online compressor.");
+          input.value = ""; // clear input
+          return;
+        }
         var form = document.getElementById('pdfUploadForm');
         startLoading(form, 'Parsing Course Outline PDFs…');
         form.submit();
