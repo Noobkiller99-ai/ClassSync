@@ -14,7 +14,10 @@ DATABASE_URL = os.getenv("DATABASE_URL") or os.getenv("POSTGRES_URL")
 
 
 def database_path(instance_path: str | Path) -> Path:
-    path = Path(instance_path)
+    if os.getenv("VERCEL"):
+        path = Path("/tmp")
+    else:
+        path = Path(instance_path)
     path.mkdir(parents=True, exist_ok=True)
     return path / "class_sync.sqlite3"
 
