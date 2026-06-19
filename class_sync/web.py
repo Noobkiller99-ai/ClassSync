@@ -354,7 +354,7 @@ def create_app(test_config: dict | None = None) -> Flask:
                 except Exception:
                     pass  # Don't let one user's failure block others
 
-    if not app.config["TESTING"]:
+    if IS_LOCAL and not app.config["TESTING"]:
         WeeklyScheduler(weekly_job).start()
 
     @app.route("/api/cron", methods=["GET", "POST"])
@@ -549,9 +549,16 @@ def _extract_course_code(filename: str, pdf_bytes: bytes) -> str | None:
 def _extract_batch_from_email(email: str) -> str:
     if not email:
         return "general"
-    username = email.split("@")[0]
-    if "." in username:
-        return username.split(".")[0].strip().lower()
+    username = email.split("@")[0].strip().lower()
+    parts = [p.strip() for p in username.split(".") if p.strip()]
+    if parts:
+        if len(parts) == 1:
+            import re
+            if re.match(r'^(pgp|pgdm|pgpm|gmp|fmb|epgp)\d+', username):
+                return username
+            return "general"
+        else:
+            return parts[0]
     return "general"
 
 
