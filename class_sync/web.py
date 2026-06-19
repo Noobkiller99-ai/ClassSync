@@ -352,6 +352,18 @@ def create_app(test_config: dict | None = None) -> Flask:
     if not app.config["TESTING"]:
         WeeklyScheduler(weekly_job).start()
 
+    @app.route("/api/cron", methods=["GET", "POST"])
+    def vercel_cron():
+        cron_secret = os.getenv("CRON_SECRET")
+        auth_header = request.headers.get("Authorization")
+        if cron_secret and auth_header != f"Bearer {cron_secret}":
+            logger.warning("Cron request unauthorized")
+            return "Unauthorized", 401
+        logger.info("Starting Vercel cron weekly refresh job")
+        weekly_job()
+        logger.info("Vercel cron weekly refresh job completed successfully")
+        return "Cron refresh complete", 200
+
     @app.get("/privacy")
     def privacy():
         return render_template("privacy.html")
