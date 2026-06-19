@@ -352,6 +352,14 @@ def create_app(test_config: dict | None = None) -> Flask:
     if not app.config["TESTING"]:
         WeeklyScheduler(weekly_job).start()
 
+    @app.get("/privacy")
+    def privacy():
+        return render_template("privacy.html")
+
+    @app.get("/terms")
+    def terms():
+        return render_template("terms.html")
+
     return app
 
 
