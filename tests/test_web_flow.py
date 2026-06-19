@@ -116,7 +116,7 @@ def test_wisenet_upload_and_global_sharing(tmp_path):
 
     # Verify that a different user query gets the shared course outline
     db = app.config["DATABASE"]
-    sessions = get_mandatory_sessions(db)
+    sessions = get_mandatory_sessions(db, "general")
     assert "FIN521" in sessions
     assert sessions["FIN521"] == [1, 3, 5]
 
@@ -284,6 +284,95 @@ def test_central_distribution_on_upload(tmp_path):
     assert payloads_user2[0]["extendedProperties"]["private"]["mandatory"] == "true"
     assert payloads_user2[0]["colorId"] == "11"
     assert "🔴 MANDATORY:" in payloads_user2[0]["summary"]
+
+
+def test_batch_bifurcation_on_upload(tmp_path):
+    from unittest.mock import patch
+    from class_sync.wisenet import MandatorySessionInfo
+    from class_sync.store import save_events, list_event_payloads, set_setting, get_mandatory_sessions
+    from class_sync.models import TimetableEvent
+    from class_sync.security import encrypt_json
+    from class_sync.tcs import serialize_events
+    from datetime import datetime
+    import io
+
+    app = make_app(tmp_path)
+    db = app.config["DATABASE"]
+    client = app.test_client()
+
+    user1_tok = "user-1-pgp25"
+    user2_tok = "user-2-pgp26"
+
+    ev1 = TimetableEvent(
+        uid="uid-user1-1",
+        subject_name="Financial Innovations & Fintech",
+        course_code="FIN521-PDM",
+        faculty="Vidhu Shekhar",
+        classroom="NCR5",
+        starts_at=datetime(2026, 6, 10, 10, 40),
+        ends_at=datetime(2026, 6, 10, 11, 50),
+        session_number="1"
+    )
+    ev2 = TimetableEvent(
+        uid="uid-user2-1",
+        subject_name="Financial Innovations & Fintech",
+        course_code="FIN521-PDM",
+        faculty="Vidhu Shekhar",
+        classroom="NCR5",
+        starts_at=datetime(2026, 6, 10, 10, 40),
+        ends_at=datetime(2026, 6, 10, 11, 50),
+        session_number="1"
+    )
+
+    # Set up user 1 (pgp25)
+    set_setting(db, user1_tok, "tcs_credentials_encrypted", encrypt_json({"username": "pgp25.student1@spjimr.org", "password": "abc"}))
+    set_setting(db, user1_tok, "preview_events", serialize_events([ev1]))
+    save_events(db, user1_tok, [ev1])
+
+    # Set up user 2 (pgp26)
+    set_setting(db, user2_tok, "tcs_credentials_encrypted", encrypt_json({"username": "pgp26.student2@spjimr.org", "password": "xyz"}))
+    set_setting(db, user2_tok, "preview_events", serialize_events([ev2]))
+    save_events(db, user2_tok, [ev2])
+
+    mock_info = MandatorySessionInfo(
+        course_code="FIN521",
+        course_shortname="FIN521-PDM-46",
+        mandatory_sessions=[1, 3]  # session 1 is mandatory
+    )
+
+    # Perform upload as User 1 (pgp25)
+    with client.session_transaction() as sess:
+        sess["user_token"] = user1_tok
+
+    with patch("class_sync.wisenet.parse_mandatory_sessions_from_pdf", return_value=mock_info):
+        data = {
+            "pdf_files": (io.BytesIO(b"%PDF-1.4 dummy"), "FIN521-Outline.pdf")
+        }
+        res = client.post(
+            "/wisenet/upload",
+            data=data,
+            content_type="multipart/form-data",
+            follow_redirects=True
+        )
+        assert res.status_code == 200
+
+    # Verify database lists course under pgp25 but NOT under pgp26
+    pgp25_sessions = get_mandatory_sessions(db, "pgp25")
+    pgp26_sessions = get_mandatory_sessions(db, "pgp26")
+    assert "FIN521" in pgp25_sessions
+    assert "FIN521" not in pgp26_sessions
+
+    # Verify that only User 1 (pgp25) has events flagged as mandatory
+    payloads_user1 = list_event_payloads(db, user1_tok)
+    payloads_user2 = list_event_payloads(db, user2_tok)
+
+    assert len(payloads_user1) == 1
+    assert payloads_user1[0]["extendedProperties"]["private"]["mandatory"] == "true"
+    assert "🔴 MANDATORY:" in payloads_user1[0]["summary"]
+
+    assert len(payloads_user2) == 1
+    assert payloads_user2[0]["extendedProperties"]["private"]["mandatory"] == "false"
+    assert "🔴 MANDATORY:" not in payloads_user2[0]["summary"]
 
 
 

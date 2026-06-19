@@ -302,7 +302,14 @@
 
 
         <div class="mandatory-breakdown">
-          <div class="mandatory-breakdown-title">📦 Centrally Synced Outlines (Available for All Students)</div>
+          <div class="mandatory-breakdown-title">
+            📦 Centrally Synced Outlines
+            {% if batch and batch != 'general' %}
+              (Available for {{ batch.upper() }} Students)
+            {% else %}
+              (Available for All Students)
+            {% endif %}
+          </div>
           {% if mandatory_data %}
             {% for code, sessions in mandatory_data.items() %}
               <div class="mandatory-course-row">

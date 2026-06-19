@@ -97,7 +97,8 @@ def create_app(test_config: dict | None = None) -> Flask:
         events_raw: list[dict] = get_setting(db, tok, "preview_events", [])  # type: ignore[assignment]
         google_ready = bool(get_setting(db, tok, "google_credentials", None))
         tcs_ready = bool(get_setting(db, tok, "tcs_credentials_encrypted", None))
-        mandatory_data = get_mandatory_sessions(db)
+        batch = _get_user_batch(app, tok)
+        mandatory_data = get_mandatory_sessions(db, batch)
         synced = bool(
             google_ready
             and any(e.get("synced_event_id") for e in list_event_payloads(db, tok))
@@ -122,6 +123,7 @@ def create_app(test_config: dict | None = None) -> Flask:
             event_groups=event_groups,
             synced=synced,
             username=username,
+            batch=batch,
             sample_mode=app.config["USE_SAMPLE_TCS"],
             admin_enabled=bool(app.config["ADMIN_TOKEN"]),
         )
@@ -168,12 +170,13 @@ def create_app(test_config: dict | None = None) -> Flask:
     def wisenet_upload():
         """
         Receives uploaded Course Outline PDFs, extracts their course codes,
-        parses the mandatory sessions, and saves them globally in the database.
+        parses the mandatory sessions, and saves them centrally in the database by batch.
         """
         from .wisenet import parse_mandatory_sessions_from_pdf
         
         tok = _user_token()
         db = app.config["DATABASE"]
+        batch = _get_user_batch(app, tok)
         
         uploaded_files = request.files.getlist("pdf_files")
         if not uploaded_files or not uploaded_files[0].filename:
@@ -200,16 +203,16 @@ def create_app(test_config: dict | None = None) -> Flask:
                 
                 session_info = parse_mandatory_sessions_from_pdf(pdf_bytes, course_code)
                 if session_info and session_info.mandatory_sessions:
-                    # Save to DB centrally
-                    current_sessions = get_mandatory_sessions(db)
+                    # Save to DB centrally for this batch
+                    current_sessions = get_mandatory_sessions(db, batch)
                     current_sessions[course_code] = session_info.mandatory_sessions
-                    save_mandatory_sessions(db, current_sessions)
+                    save_mandatory_sessions(db, batch, current_sessions)
                     success_count += 1
                 else:
-                    # Even if no mandatory sessions are found, save an empty list centrally
-                    current_sessions = get_mandatory_sessions(db)
+                    # Even if no mandatory sessions are found, save an empty list centrally for this batch
+                    current_sessions = get_mandatory_sessions(db, batch)
                     current_sessions[course_code] = []
-                    save_mandatory_sessions(db, current_sessions)
+                    save_mandatory_sessions(db, batch, current_sessions)
                     success_count += 1
                     
             except Exception as e:
@@ -217,9 +220,11 @@ def create_app(test_config: dict | None = None) -> Flask:
                 error_count += 1
                 
         if success_count > 0:
-            mandatory_data = get_mandatory_sessions(db)
+            mandatory_data = get_mandatory_sessions(db, batch)
             for user_tok in get_all_user_tokens(db):
-                _reapply_mandatory_flags(app, user_tok, mandatory_data)
+                # Only reapply mandatory flags to users in the same batch
+                if _get_user_batch(app, user_tok) == batch:
+                    _reapply_mandatory_flags(app, user_tok, mandatory_data)
             flash(
                 f"Successfully processed {success_count} course outline(s)! "
                 f"Mandatory sessions are now marked in red.",
@@ -394,7 +399,8 @@ def _fetch_timetable(app: Flask, credentials: dict, user_token: str | None = Non
             now=now,
         )
     # Apply mandatory flags if central Wisenet data is available
-    mandatory_data = get_mandatory_sessions(app.config["DATABASE"])
+    batch = _extract_batch_from_email(credentials.get("username", ""))
+    mandatory_data = get_mandatory_sessions(app.config["DATABASE"], batch)
     if mandatory_data:
         events = apply_mandatory_flags(events, mandatory_data)
     return events
@@ -540,8 +546,26 @@ def _extract_course_code(filename: str, pdf_bytes: bytes) -> str | None:
     return None
 
 
+def _extract_batch_from_email(email: str) -> str:
+    if not email:
+        return "general"
+    username = email.split("@")[0]
+    if "." in username:
+        return username.split(".")[0].strip().lower()
+    return "general"
+
+
+def _get_user_batch(app: Flask, user_token: str) -> str:
+    creds = _stored_tcs_credentials(app, user_token)
+    if creds:
+        return _extract_batch_from_email(creds.get("username", ""))
+    return "general"
+
+
 # Public aliases used by tests
 fetch_timetable = _fetch_timetable
 sync_calendar = _sync_calendar
 stored_tcs_credentials = _stored_tcs_credentials
 sync_window_now = _sync_window_now
+extract_batch_from_email = _extract_batch_from_email
+get_user_batch = _get_user_batch

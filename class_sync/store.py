@@ -92,13 +92,22 @@ def init_db(path: str | Path) -> None:
             except Exception:
                 pass
 
-            # Migrate mandatory_sessions to global central store schema if it has old format
-            try:
+        # Migrate mandatory_sessions to batch-specific schema if it has old format (no batch column)
+        try:
+            if DATABASE_URL:
+                with conn.cursor() as cur: # type: ignore[attr-defined]
+                    cur.execute(
+                        "SELECT 1 FROM information_schema.columns "
+                        "WHERE table_name = 'mandatory_sessions' AND column_name = 'batch'"
+                    )
+                    if not cur.fetchone():
+                        cur.execute("DROP TABLE IF EXISTS mandatory_sessions CASCADE")
+            else:
                 cols = [row[1] for row in conn.execute("PRAGMA table_info(mandatory_sessions)").fetchall()] # type: ignore[attr-defined]
-                if cols and "user_token" in cols:
+                if cols and "batch" not in cols:
                     conn.execute("DROP TABLE IF EXISTS mandatory_sessions") # type: ignore[attr-defined]
-            except Exception:
-                pass
+        except Exception:
+            pass
 
         _executescript(
             conn,
@@ -118,15 +127,17 @@ def init_db(path: str | Path) -> None:
                 PRIMARY KEY (user_token, uid)
             );
             CREATE TABLE IF NOT EXISTS mandatory_sessions (
-                course_code  TEXT PRIMARY KEY,
+                batch        TEXT NOT NULL,
+                course_code  TEXT NOT NULL,
                 session_nums TEXT NOT NULL,
-                updated_at   TEXT NOT NULL
+                updated_at   TEXT NOT NULL,
+                PRIMARY KEY (batch, course_code)
             );
             """,
         )
 
 
-# ── Settings ──────────────────────────────────────────────────────────────────
+# ── Settings ───────────────────────────────────────────────────────────────
 
 def set_setting(path: str | Path, user_token: str, key: str, value: object) -> None:
     with connect(path) as conn:
@@ -230,39 +241,40 @@ def mark_many_synced(path: str | Path, user_token: str, event_ids: dict[str, str
 # ── Mandatory sessions ─────────────────────────────────────────────────────────
 
 def save_mandatory_sessions(
-    path: str | Path, mandatory_sessions: dict[str, list[int]]
+    path: str | Path, batch: str, mandatory_sessions: dict[str, list[int]]
 ) -> None:
-    """Persist mandatory session data centrally: course_code → list of session numbers."""
+    """Persist mandatory session data centrally for a batch: (batch, course_code) → list of session numbers."""
     now = datetime.now(UTC).isoformat()
     with connect(path) as conn:
         for course_code, session_nums in mandatory_sessions.items():
             _execute(
                 conn,
-                "INSERT INTO mandatory_sessions(course_code, session_nums, updated_at) "
-                "VALUES(?, ?, ?) "
-                "ON CONFLICT(course_code) DO UPDATE SET "
+                "INSERT INTO mandatory_sessions(batch, course_code, session_nums, updated_at) "
+                "VALUES(?, ?, ?, ?) "
+                "ON CONFLICT(batch, course_code) DO UPDATE SET "
                 "session_nums = excluded.session_nums, updated_at = excluded.updated_at",
-                (course_code, json.dumps(session_nums), now),
+                (batch, course_code, json.dumps(session_nums), now),
             )
 
 
-def get_mandatory_sessions(path: str | Path) -> dict[str, list[int]]:
-    """Load mandatory session data centrally as course_code → list[int]."""
+def get_mandatory_sessions(path: str | Path, batch: str) -> dict[str, list[int]]:
+    """Load mandatory session data centrally for a batch as course_code → list[int]."""
     res: dict[str, list[int]] = {}
     with connect(path) as conn:
         rows = _execute(
             conn,
-            "SELECT course_code, session_nums FROM mandatory_sessions ORDER BY updated_at ASC",
+            "SELECT course_code, session_nums FROM mandatory_sessions WHERE batch = ? ORDER BY updated_at ASC",
+            (batch,),
         ).fetchall() # type: ignore[attr-defined]
         for row in rows:
             res[row["course_code"]] = json.loads(row["session_nums"])
     return res
 
 
-def clear_mandatory_sessions(path: str | Path) -> None:
-    """Remove all central mandatory session records."""
+def clear_mandatory_sessions(path: str | Path, batch: str) -> None:
+    """Remove all central mandatory session records for a batch."""
     with connect(path) as conn:
-        _execute(conn, "DELETE FROM mandatory_sessions")
+        _execute(conn, "DELETE FROM mandatory_sessions WHERE batch = ?", (batch,))
 
 
 def get_all_user_tokens(path: str | Path) -> list[str]:
