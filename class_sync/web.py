@@ -52,8 +52,8 @@ from .tcs import (
 
 
 def create_app(test_config: dict | None = None) -> Flask:
-    # True when running locally (not on Render or any cloud with RENDER env set)
-    IS_LOCAL = not os.getenv("RENDER")
+    # True when running locally (not on Render or Vercel, or any cloud with RENDER or VERCEL env set)
+    IS_LOCAL = not (os.getenv("RENDER") or os.getenv("VERCEL"))
 
     app = Flask(__name__, instance_relative_config=True)
     # Respect X-Forwarded-Proto from Render/any reverse proxy so OAuth
@@ -98,7 +98,6 @@ def create_app(test_config: dict | None = None) -> Flask:
         google_ready = bool(get_setting(db, tok, "google_credentials", None))
         tcs_ready = bool(get_setting(db, tok, "tcs_credentials_encrypted", None))
         mandatory_data = get_mandatory_sessions(db)
-        wisenet_ready = bool(get_setting(db, tok, "wisenet_cookies", None)) or bool(mandatory_data)
         synced = bool(
             google_ready
             and any(e.get("synced_event_id") for e in list_event_payloads(db, tok))
@@ -111,16 +110,6 @@ def create_app(test_config: dict | None = None) -> Flask:
                 raw = creds.get("username", "").split("@")[0]
                 username = raw.replace(".", " ").title()
 
-        # Ensure wisenet_state is set for the alternative copy-paste script
-        wisenet_state = get_setting(db, tok, "wisenet_state", None)
-        if not wisenet_state:
-            import secrets
-            wisenet_state = secrets.token_urlsafe(24)
-            set_setting(db, tok, "wisenet_state", wisenet_state)
-
-        process_url = url_for("wisenet_ingest", _external=True)
-        done_url = url_for("wisenet_sync_done", _external=True)
-
         event_groups = _group_events(events_raw)
         return render_template(
             "index.html",
@@ -128,7 +117,6 @@ def create_app(test_config: dict | None = None) -> Flask:
             google_ready=google_ready,
             google_configured=app.config["GOOGLE_CONFIGURED"],
             tcs_ready=tcs_ready,
-            wisenet_ready=wisenet_ready,
             mandatory_data=mandatory_data,
             is_local=IS_LOCAL,
             event_groups=event_groups,
@@ -136,9 +124,6 @@ def create_app(test_config: dict | None = None) -> Flask:
             username=username,
             sample_mode=app.config["USE_SAMPLE_TCS"],
             admin_enabled=bool(app.config["ADMIN_TOKEN"]),
-            wisenet_state=wisenet_state,
-            process_url=process_url,
-            done_url=done_url,
         )
 
     @app.post("/tcs/login")
@@ -175,349 +160,8 @@ def create_app(test_config: dict | None = None) -> Flask:
         delete_setting(db, tok, "tcs_credentials_encrypted")
         delete_setting(db, tok, "preview_events")
         delete_setting(db, tok, "google_credentials")
-        delete_setting(db, tok, "wisenet_credentials_encrypted")
-        delete_setting(db, tok, "wisenet_cookies")
         clear_events(db, tok)
         flash("Session cleared. Enter your TCS iON credentials to start over.", "info")
-        return redirect(url_for("index"))
-
-    # ── Wisenet (Moodle LMS) routes ───────────────────────────────────────────
-
-    @app.post("/wisenet/connect")
-    def wisenet_connect():
-        """
-        Redirect the user's browser to Wisenet SAML2 login (Google SSO).
-        After login, Wisenet sends the browser to /wisenet/bridge which uses
-        JavaScript fetch() + Wisenet's open CORS policy to relay the Moodle
-        sesskey back to our server.
-
-        Works identically on local and cloud. No credentials stored.
-        Only @spjimr.org accounts can log into Wisenet (enforced by SPJIMR IT).
-        """
-        import secrets as _secrets
-        from urllib.parse import quote as _quote
-
-        tok = _user_token()
-        db = app.config["DATABASE"]
-
-        # Generate a one-time state token to tie the redirect to this session
-        state = _secrets.token_urlsafe(24)
-        set_setting(db, tok, "wisenet_state", state)
-
-        # Bridge URL: where Wisenet sends the browser after successful login
-        bridge_url = url_for("wisenet_bridge", state=state, _external=True)
-
-        # Wisenet's SAML2 login with wantsurl = our bridge page
-        # idp value probed from the login page of wisenet.spjimr.org
-        wisenet_login = (
-            "https://wisenet.spjimr.org/auth/saml2/login.php"
-            f"?wants={_quote(bridge_url, safe='')}"
-            "&idp=20e275a0d092a86c5c963a3b05430c48"
-            "&passive=off"
-        )
-        return redirect(wisenet_login)
-
-    # Alias kept for compatibility
-    app.add_url_rule("/wisenet/login", view_func=wisenet_connect, methods=["POST"])
-
-    @app.get("/wisenet/bridge")
-    def wisenet_bridge():
-        """
-        Relay page served by our server after Wisenet SAML2 login completes.
-        Executes entirely in the user's browser to bypass cross-origin cookie restrictions.
-        It orchestrates fetching courses, downloading PDFs, and POSTing them to our backend.
-        """
-        state = request.args.get("state", "")
-        process_url = url_for("wisenet_ingest", _external=True)
-        done_url = url_for("wisenet_sync_done", _external=True)
-
-        html = f"""<!DOCTYPE html>
-<html lang="en">
-<head>
-  <meta charset="UTF-8">
-  <title>ClassSync — Syncing Wisenet…</title>
-  <style>
-    *{{margin:0;padding:0;box-sizing:border-box}}
-    body{{font-family:'Inter',system-ui,sans-serif;background:#0f0f14;color:#e5e7eb;
-          display:flex;align-items:center;justify-content:center;min-height:100vh}}
-    .card{{background:rgba(255,255,255,.05);border:1px solid rgba(255,255,255,.08);
-           border-radius:16px;padding:48px 40px;text-align:center;max-width:440px;width:90%}}
-    .spinner{{width:52px;height:52px;border:3px solid rgba(239,68,68,.2);
-              border-top-color:#ef4444;border-radius:50%;
-              animation:spin .85s linear infinite;margin:0 auto 28px}}
-    @keyframes spin{{to{{transform:rotate(360deg)}}}}
-    h2{{font-size:20px;font-weight:700;margin-bottom:10px}}
-    p{{font-size:13px;color:#9ca3af;line-height:1.7}}
-    #status{{margin-top:20px;font-weight:600;color:#3b82f6}}
-    .err{{color:#f87171;font-size:13px;margin-top:18px;display:none;text-align:left;
-           background:rgba(239,68,68,.08);border:1px solid rgba(239,68,68,.2);
-           border-radius:8px;padding:12px}}
-    .retry{{display:none;margin-top:16px;padding:10px 20px;background:#ef4444;color:#fff;
-             border:none;border-radius:8px;cursor:pointer;font-size:14px;font-weight:600}}
-  </style>
-</head>
-<body>
-  <div class="card">
-    <div class="spinner" id="spin"></div>
-    <h2>Syncing your Courses</h2>
-    <p>Extracting mandatory sessions securely from your Wisenet dashboard.<br>Please do not close this window.</p>
-    <div id="status">Initializing...</div>
-    <div class="err" id="err"></div>
-    <button class="retry" id="retry" onclick="window.location.href='/'">← Go Back</button>
-  </div>
-  <script>
-  (async () => {{
-    const PROCESS_URL = {process_url!r};
-    const DONE_URL    = {done_url!r};
-    const STATE       = {state!r};
-
-    function setStatus(msg) {{
-      document.getElementById('status').textContent = msg;
-    }}
-    function fail(msg) {{
-      document.getElementById('spin').style.display = 'none';
-      setStatus('Sync Failed');
-      const e = document.getElementById('err');
-      e.style.display = 'block';
-      e.textContent = '⚠ ' + msg;
-      document.getElementById('retry').style.display = 'inline-block';
-    }}
-
-    // Convert Blob to Base64
-    function blobToBase64(blob) {{
-      return new Promise((resolve, reject) => {{
-        const reader = new FileReader();
-        reader.onloadend = () => resolve(reader.result.split(',')[1]);
-        reader.onerror = reject;
-        reader.readAsDataURL(blob);
-      }});
-    }}
-
-    function findPdfUrl(html) {{
-      // Method 1
-      let m = [...html.matchAll(/<a[^>]+href="([^"]*mod\\/resource\\/view\\.php\\?id=\\d+)"[^>]*>(.*?)<\\/a/gi)];
-      for (let match of m) {{
-        let text = match[2].replace(/<[^>]+>/g, '').trim().toLowerCase();
-        if (text.includes("course outline") || /pgdm\\s+co\\b/.test(text)) {{
-          let href = match[1];
-          return href.startsWith("/") ? "https://wisenet.spjimr.org" + href : href;
-        }}
-      }}
-      // Method 2
-      m = html.match(/href="([^"]*pluginfile[^"]*(?:outline|PGDM[^"]*CO|course[^"]*outline)[^"]*\\.pdf[^"]*)"/i);
-      if (m) return m[1];
-      
-      // Method 3
-      m = [...html.matchAll(/(mod\\/resource\\/view\\.php\\?id=\\d+)/gi)];
-      for (let match of m) {{
-        let start = Math.max(0, match.index - 200);
-        let end = Math.min(html.length, match.index + 200);
-        let context = html.substring(start, end).toLowerCase();
-        if (context.includes("outline") || context.includes("pgdm co")) {{
-          return "https://wisenet.spjimr.org/" + match[1];
-        }}
-      }}
-      return null;
-    }}
-
-    try {{
-      setStatus('Connecting to Wisenet...');
-      const r = await fetch('https://wisenet.spjimr.org/my/', {{ credentials: 'include', cache: 'no-store' }});
-      if (!r.ok) throw new Error('Wisenet HTTP ' + r.status + '. Are you logged in?');
-      const html = await r.text();
-
-      const sk = html.match(/"sesskey"\\s*:\\s*"([^"]+)"/);
-      const sesskey = sk ? sk[1] : '';
-      if (!sesskey) throw new Error('Could not find Moodle session key. Please make sure you are logged in.');
-
-      setStatus('Fetching enrolled courses...');
-      const coursesReq = await fetch('https://wisenet.spjimr.org/lib/ajax/service.php?sesskey=' + sesskey + '&info=core_course_get_enrolled_courses_by_timeline_classification', {{
-        method: 'POST',
-        credentials: 'include',
-        body: JSON.stringify([{{
-            index: 0,
-            methodname: "core_course_get_enrolled_courses_by_timeline_classification",
-            args: {{ classification: "inprogress", offset: 0, limit: 0, sort: "fullname", customfieldname: "", customfieldvalue: "" }}
-        }}])
-      }});
-      if (!coursesReq.ok) throw new Error('Failed to fetch courses');
-      const coursesData = await coursesReq.json();
-      if (coursesData[0].error) throw new Error('Moodle Error: ' + coursesData[0].exception.message);
-      
-      const courses = coursesData[0].data.courses || [];
-      if (courses.length === 0) {{
-        setStatus('No active courses found.');
-        setTimeout(() => window.location.href = DONE_URL, 2000);
-        return;
-      }}
-
-      let processed = 0;
-      let total_sessions = 0;
-      for (let i = 0; i < courses.length; i++) {{
-        const course = courses[i];
-        setStatus(`Processing course: ${course.shortname} (${i + 1}/${courses.length})`);
-        
-        // 1. Fetch course page
-        const cReq = await fetch(`https://wisenet.spjimr.org/course/view.php?id=${course.id}`, {{ credentials: 'include' }});
-        const cHtml = await cReq.text();
-        
-        // 2. Find PDF url
-        const pdfUrl = findPdfUrl(cHtml);
-        if (!pdfUrl) continue;
-        
-        // 3. Download PDF
-        const pdfReq = await fetch(pdfUrl, {{ credentials: 'include' }});
-        if (!pdfReq.ok) continue;
-        const pdfBlob = await pdfReq.blob();
-        if (pdfBlob.type !== 'application/pdf' && !pdfUrl.toLowerCase().includes('.pdf')) continue;
-
-        // 4. Send to our server to parse
-        const base64Pdf = await blobToBase64(pdfBlob);
-        const postReq = await fetch(PROCESS_URL, {{
-          method: 'POST',
-          headers: {{ 'Content-Type': 'application/json' }},
-          body: JSON.stringify({{
-            state: STATE,
-            sesskey: sesskey,
-            course_id: course.id,
-            course_code: course.shortname,
-            pdf_base64: base64Pdf
-          }})
-        }});
-        
-        if (postReq.ok) {{
-          const res = await postReq.json();
-          if (res.ok && res.count > 0) {{
-            total_sessions += res.count;
-          }}
-        }}
-        processed++;
-      }}
-
-      setStatus(`Done! Extracted ${total_sessions} mandatory sessions.`);
-      // Redirect to finish
-      setTimeout(() => window.location.href = DONE_URL + "?state=" + encodeURIComponent(STATE), 1000);
-
-    }} catch (e) {{
-      fail(e.message);
-    }}
-  }})();
-  </script>
-</body>
-</html>"""
-        return html, 200, {"Content-Type": "text/html; charset=utf-8"}
-
-    @app.route("/wisenet/ingest", methods=["POST", "OPTIONS"])
-    def wisenet_ingest():
-        """
-        Receives raw PDF bytes from the JS bridge, parses mandatory sessions,
-        saves them to the database, and re-applies flags.
-        Supports cross-origin requests from Wisenet dashboard.
-        """
-        from flask import jsonify
-        
-        # Handle CORS preflight
-        if request.method == "OPTIONS":
-            res = app.make_response(("", 204))
-            res.headers["Access-Control-Allow-Origin"] = "*"
-            res.headers["Access-Control-Allow-Methods"] = "POST, OPTIONS"
-            res.headers["Access-Control-Allow-Headers"] = "Content-Type"
-            return res
-
-        from .wisenet import parse_mandatory_sessions_from_pdf
-        import base64
-
-        tok = _user_token()
-        db = app.config["DATABASE"]
-
-        data = request.get_json(silent=True) or {}
-        state = data.get("state", "")
-        sesskey = data.get("sesskey", "")
-        course_code = data.get("course_code", "")
-        pdf_b64 = data.get("pdf_base64", "")
-
-        # Validate state (CSRF protection)
-        stored_state = get_setting(db, tok, "wisenet_state", None)
-        if not stored_state or state != stored_state:
-            res_err = jsonify({"ok": False, "error": "Session expired or invalid state."})
-            res_err.headers["Access-Control-Allow-Origin"] = "*"
-            return res_err, 400
-
-        if not pdf_b64 or not course_code:
-            res_err = jsonify({"ok": False, "error": "Missing PDF data."})
-            res_err.headers["Access-Control-Allow-Origin"] = "*"
-            return res_err, 400
-
-        # Mark wisenet as connected by storing the sesskey/dummy token
-        if sesskey:
-            set_setting(db, tok, "wisenet_cookies", {"sesskey": sesskey})
-
-        try:
-            pdf_bytes = base64.b64decode(pdf_b64)
-            session_info = parse_mandatory_sessions_from_pdf(pdf_bytes, course_code)
-            
-            if session_info and session_info.mandatory_sessions:
-                # Add/merge into current sessions in DB centrally
-                current_sessions = get_mandatory_sessions(db)
-                current_sessions[course_code] = session_info.mandatory_sessions
-                save_mandatory_sessions(db, current_sessions)
-                
-                # Re-apply to existing events for all users immediately
-                for user_tok in get_all_user_tokens(db):
-                    _reapply_mandatory_flags(app, user_tok, current_sessions)
-                
-                res_ok = jsonify({"ok": True, "count": len(session_info.mandatory_sessions)})
-                res_ok.headers["Access-Control-Allow-Origin"] = "*"
-                return res_ok
-                
-            res_empty = jsonify({"ok": True, "count": 0})
-            res_empty.headers["Access-Control-Allow-Origin"] = "*"
-            return res_empty
-        except Exception as e:
-            logger.error("Failed to parse PDF for %s: %s", course_code, e)
-            res_fail = jsonify({"ok": False, "error": str(e)})
-            res_fail.headers["Access-Control-Allow-Origin"] = "*"
-            return res_fail, 500
-
-    @app.get("/wisenet/sync_done")
-    def wisenet_sync_done():
-        """Final endpoint to reapply mandatory flags and return to dashboard."""
-        tok = _user_token()
-        db = app.config["DATABASE"]
-        
-        # Clear state
-        delete_setting(db, tok, "wisenet_state")
-        
-        # Re-apply to existing events centrally for all users
-        mandatory_data = get_mandatory_sessions(db)
-        for user_tok in get_all_user_tokens(db):
-            _reapply_mandatory_flags(app, user_tok, mandatory_data)
-        
-        total = sum(len(v) for v in mandatory_data.values())
-        flash(
-            f"Wisenet sync done \u2014 {len(mandatory_data)} courses scanned, "
-            f"{total} mandatory sessions marked in red.",
-            "success",
-        )
-        return redirect(url_for("index"))
-
-    @app.post("/wisenet/sync")
-    @app.get("/wisenet/sync")
-    def wisenet_sync():
-        """
-        Legacy scraper route. Since we no longer have cross-origin cookies on the
-        server, we redirect the user to reconnect so the client-side bridge runs.
-        """
-        return redirect(url_for("wisenet_connect"))
-
-
-    @app.post("/wisenet/reset")
-    def wisenet_reset():
-        tok = _user_token()
-        db = app.config["DATABASE"]
-        delete_setting(db, tok, "wisenet_credentials_encrypted")  # legacy cleanup
-        delete_setting(db, tok, "wisenet_cookies")
-        flash("Wisenet disconnected.", "info")
         return redirect(url_for("index"))
 
     @app.post("/wisenet/upload")
@@ -794,17 +438,7 @@ def _group_events(events: list[dict]) -> list[dict]:
     return groups
 
 
-def _fetch_wisenet_mandatory_sessions_from_cookies(
-    session_data: dict,
-) -> dict[str, list[int]]:
-    """Scrape Wisenet mandatory sessions using previously captured cookies."""
-    from .wisenet import build_client_from_cookies
-    client = build_client_from_cookies(
-        cookies=session_data["cookies"],
-        sesskey=session_data["sesskey"],
-        userid=session_data["userid"],
-    )
-    return client.get_all_mandatory_sessions()
+
 
 
 def _reapply_mandatory_flags(

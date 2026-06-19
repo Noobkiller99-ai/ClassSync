@@ -57,10 +57,10 @@
             Not signed in
           {% endif %}
         </span>
-        {% if wisenet_ready %}
+        {% if mandatory_data %}
           <span class="badge ok" style="border-color:rgba(239,68,68,.35);color:#f87171;background:rgba(239,68,68,.08)">
             <span class="dot" style="background:#ef4444"></span>
-            Wisenet Connected
+            {{ mandatory_data | length }} Course Outline{{ 's' if mandatory_data | length != 1 }} Uploaded
           </span>
         {% endif %}
         {% if google_ready %}
@@ -254,9 +254,6 @@
         {% endif %}
       {% endif %}
 
-      {# ═══════════════════════════════════════════════════════════
-         WISENET — Mandatory Sessions Panel
-      ═══════════════════════════════════════════════════════════ #}
       <div class="wisenet-panel">
         <div class="wisenet-panel-header">
           <div class="wisenet-panel-info">
@@ -264,55 +261,32 @@
             <div>
               <div class="wisenet-title">Mandatory Sessions</div>
               <div class="wisenet-sub">
-                {% if wisenet_ready and mandatory_data %}
+                {% if mandatory_data %}
                   {% set total_mandatory = mandatory_data.values() | map('length') | sum %}
                   {{ total_mandatory }} mandatory session{{ 's' if total_mandatory != 1 }} across {{ mandatory_data | length }} course{{ 's' if mandatory_data | length != 1 }}
-                {% elif wisenet_ready %}
-                  Connected — no mandatory sessions found
                 {% else %}
-                  Connect Wisenet to auto-detect mandatory sessions from Course Outlines
+                  Upload Course Outline PDFs to automatically identify mandatory sessions
                 {% endif %}
               </div>
             </div>
           </div>
-          <div class="wisenet-actions">
-            {% if wisenet_ready %}
-              <form method="post" action="{{ url_for('wisenet_sync') }}" onsubmit="startLoading(this, 'Re-scanning Wisenet course outlines…')">
-                <button type="submit" class="btn btn-ghost btn-sm" id="wisenetSyncBtn">↻ Rescan</button>
-              </form>
-              <form method="post" action="{{ url_for('wisenet_reset') }}">
-                <button type="submit" class="btn btn-danger btn-sm">Disconnect</button>
-              </form>
-            {% else %}
-              <form method="post" action="{{ url_for('wisenet_connect') }}"
-                    onsubmit="startLoading(this, 'Signing into Wisenet with your Google account…')">
-                <button type="submit" class="btn btn-wisenet" id="wisenetConnectBtn">
-                  <span class="btn-icon">🔗</span>
-                  <span class="btn-label">Connect Wisenet</span>
-                </button>
-              </form>
-            {% endif %}
-          </div>
         </div>
 
-        {# How-it-works panel (only shown when not yet connected) #}
-        {% if not wisenet_ready %}
+        {# How-it-works panel #}
         <div class="wisenet-how">
           <div class="wisenet-how-step">
             <span class="wisenet-step-num">1</span>
-            <span>Click <strong>Connect Wisenet</strong> — your already-connected Google account is used automatically</span>
+            <span>Obtain the Course Outline PDF(s) for your current term's courses.</span>
           </div>
           <div class="wisenet-how-step">
             <span class="wisenet-step-num">2</span>
-            <span>ClassSync signs into Wisenet on your behalf using Google SSO</span>
+            <span>Upload the files using the drag-and-drop zone below.</span>
           </div>
           <div class="wisenet-how-step">
             <span class="wisenet-step-num">3</span>
-            <span>Mandatory sessions are extracted from Course Outline PDFs and highlighted in red</span>
+            <span>Mandatory sessions are extracted and highlighted globally in red for all students.</span>
           </div>
-          <p class="security-note">&#x1f512; No password ever stored — uses the same Google account you connected above.</p>
         </div>
-        {% endif %}
 
         {# Always show PDF upload area #}
         <div class="wisenet-upload-zone" id="wisenetUploadZone">
@@ -326,150 +300,7 @@
           </form>
         </div>
 
-        {# Alternative script instructions #}
-        {% if not wisenet_ready %}
-        <details class="wisenet-alternative">
-          <summary>🔗 Alternative Connection Method (Use if normal redirect fails)</summary>
-          <div class="alternative-content">
-            <p>If Wisenet's SSO redirect fails to bring you back to ClassSync (often due to Moodle security redirect limits), follow these simple steps to sync your courses:</p>
-            <ol>
-              <li>Open <a href="https://wisenet.spjimr.org/my/" target="_blank" rel="noopener" class="link-accent">Wisenet Dashboard</a> in a new tab and sign in if needed.</li>
-              <li>While on your Wisenet page, open the Developer Console:
-                <ul>
-                  <li><strong>Windows/Linux:</strong> Press <kbd>F12</kbd> (or <kbd>Ctrl</kbd>+<kbd>Shift</kbd>+<kbd>J</kbd>).</li>
-                  <li><strong>Mac:</strong> Press <kbd>Cmd</kbd>+<kbd>Option</kbd>+<kbd>J</kbd>.</li>
-                </ul>
-              </li>
-              <li>Copy the script below, paste it into the console, and press <kbd>Enter</kbd>:</li>
-            </ol>
-            <div class="code-container">
-              <textarea readonly id="consoleScriptText" onclick="this.select()" style="font-family: monospace; white-space: pre; overflow-x: auto;">(async () => {
-  const PROCESS_URL = "{{ process_url }}";
-  const DONE_URL    = "{{ done_url }}";
-  const STATE       = "{{ wisenet_state }}";
 
-  function log(msg) {
-    console.log("[ClassSync] " + msg);
-  }
-
-  function blobToBase64(blob) {
-    return new Promise((resolve, reject) => {
-      const reader = new FileReader();
-      reader.onloadend = () => resolve(reader.result.split(',')[1]);
-      reader.onerror = reject;
-      reader.readAsDataURL(blob);
-    });
-  }
-
-  function findPdfUrl(html) {
-    let m = [...html.matchAll(/<a[^>]+href="([^"]*mod\/resource\/view\.php\?id=\d+)"[^>]*>(.*?)<\/a/gi)];
-    for (let match of m) {
-      let text = match[2].replace(/<[^>]+>/g, '').trim().toLowerCase();
-      if (text.includes("course outline") || /pgdm\s+co\b/.test(text)) {
-        let href = match[1];
-        return href.startsWith("/") ? "https://wisenet.spjimr.org" + href : href;
-      }
-    }
-    m = html.match(/href="([^"]*pluginfile[^"]*(?:outline|PGDM[^"]*CO|course[^"]*outline)[^"]*\.pdf[^"]*)"/i);
-    if (m) return m[1];
-    
-    m = [...html.matchAll(/(mod\/resource\/view\.php\?id=\d+)/gi)];
-    for (let match of m) {
-      let start = Math.max(0, match.index - 200);
-      let end = Math.min(html.length, match.index + 200);
-      let context = html.substring(start, end).toLowerCase();
-      if (context.includes("outline") || context.includes("pgdm co")) {
-        return "https://wisenet.spjimr.org/" + match[1];
-      }
-    }
-    return null;
-  }
-
-  try {
-    log('Connecting to Wisenet...');
-    const r = await fetch('/my/', { cache: 'no-store' });
-    if (!r.ok) throw new Error('Wisenet HTTP ' + r.status + '. Are you logged in?');
-    const html = await r.text();
-
-    const sk = html.match(/"sesskey"\s*:\s*"([^"]+)"/);
-    const sesskey = sk ? sk[1] : '';
-    if (!sesskey) throw new Error('Could not find Moodle session key.');
-
-    log('Fetching enrolled courses...');
-    const coursesReq = await fetch('/lib/ajax/service.php?sesskey=' + sesskey + '&info=core_course_get_enrolled_courses_by_timeline_classification', {
-      method: 'POST',
-      body: JSON.stringify([{
-          index: 0,
-          methodname: "core_course_get_enrolled_courses_by_timeline_classification",
-          args: { classification: "inprogress", offset: 0, limit: 0, sort: "fullname", customfieldname: "", customfieldvalue: "" }
-      }])
-    });
-    if (!coursesReq.ok) throw new Error('Failed to fetch courses');
-    const coursesData = await coursesReq.json();
-    if (coursesData[0].error) throw new Error('Moodle Error: ' + coursesData[0].exception.message);
-    
-    const courses = coursesData[0].data.courses || [];
-    if (courses.length === 0) {
-      log('No active courses found.');
-      window.location.href = DONE_URL + "?state=" + encodeURIComponent(STATE);
-      return;
-    }
-
-    let total_sessions = 0;
-    for (let i = 0; i < courses.length; i++) {
-      const course = courses[i];
-      log(`Processing course ${i+1}/${courses.length}: ${course.shortname}...`);
-      
-      const cReq = await fetch(`/course/view.php?id=${course.id}`);
-      const cHtml = await cReq.text();
-      
-      const pdfUrl = findPdfUrl(cHtml);
-      if (!pdfUrl) continue;
-      
-      const pdfReq = await fetch(pdfUrl);
-      if (!pdfReq.ok) continue;
-      const pdfBlob = await pdfReq.blob();
-
-      const base64Pdf = await blobToBase64(pdfBlob);
-      const postReq = await fetch(PROCESS_URL, {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({
-          state: STATE,
-          sesskey: sesskey,
-          course_id: course.id,
-          course_code: course.shortname,
-          pdf_base64: base64Pdf
-        })
-      });
-      
-      if (postReq.ok) {
-        const res = await postReq.json();
-        if (res.ok && res.count > 0) {
-          total_sessions += res.count;
-        }
-      }
-    }
-
-    log(`Done! Extracted ${total_sessions} mandatory sessions.`);
-    window.location.href = DONE_URL + "?state=" + encodeURIComponent(STATE);
-
-  } catch (e) {
-    alert('Sync Error: ' + e.message);
-    console.error(e);
-  }
-})();</textarea>
-              <div style="display: flex; gap: 8px;">
-                <button type="button" class="btn btn-ghost btn-sm" onclick="copyConsoleScript()" style="flex: 1;">Copy Script</button>
-                <a id="wisenetBookmarklet" href="" class="btn btn-ghost btn-sm" style="flex: 1; border-color: rgba(34, 211, 238, 0.3); color: var(--accent);">Drag to Bookmarks bar</a>
-              </div>
-            </div>
-          </div>
-        </details>
-        {% endif %}
-
-
-        {# Show mandatory session breakdown per course #}
         <div class="mandatory-breakdown">
           <div class="mandatory-breakdown-title">📦 Centrally Synced Outlines (Available for All Students)</div>
           {% if mandatory_data %}
@@ -615,27 +446,7 @@
       }, 4500 + i * 600);
     });
 
-    /* ── Copy Console Script ───────────────────────────────── */
-    function copyConsoleScript() {
-      var textarea = document.getElementById('consoleScriptText');
-      textarea.select();
-      document.execCommand('copy');
-      alert('Script copied to clipboard! Paste it into the Wisenet console (F12) to sync.');
-    }
 
-    /* ── Generate Bookmarklet ──────────────────────────────── */
-    window.addEventListener('DOMContentLoaded', function() {
-      var textarea = document.getElementById('consoleScriptText');
-      var bookmarkletLink = document.getElementById('wisenetBookmarklet');
-      if (textarea && bookmarkletLink) {
-        var code = textarea.value;
-        // Strip out single line comments just in case
-        code = code.replace(/\/\/.*$/gm, '');
-        // URL encode the javascript code
-        var urlSafeCode = "javascript:(async () => {" + encodeURIComponent(code) + "})();";
-        bookmarkletLink.setAttribute('href', urlSafeCode);
-      }
-    });
 
     /* ── PDF Drag & Drop ───────────────────────────────────── */
     function submitPdfUpload(input) {

@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import json
+import os
 import sqlite3
 from contextlib import contextmanager
 from datetime import UTC, datetime
@@ -8,6 +9,8 @@ from pathlib import Path
 from typing import Iterator
 
 from .models import TimetableEvent
+
+DATABASE_URL = os.getenv("DATABASE_URL") or os.getenv("POSTGRES_URL")
 
 
 def database_path(instance_path: str | Path) -> Path:
@@ -17,39 +20,85 @@ def database_path(instance_path: str | Path) -> Path:
 
 
 @contextmanager
-def connect(path: str | Path) -> Iterator[sqlite3.Connection]:
-    conn = sqlite3.connect(path)
-    conn.row_factory = sqlite3.Row
-    try:
-        yield conn
-        conn.commit()
-    finally:
-        conn.close()
+def connect(path: str | Path) -> Iterator[object]:
+    if DATABASE_URL:
+        import psycopg2
+        from psycopg2.extras import DictCursor
+        conn = psycopg2.connect(DATABASE_URL, cursor_factory=DictCursor)
+        try:
+            yield conn
+            conn.commit()
+        except Exception:
+            conn.rollback()
+            raise
+        finally:
+            conn.close()
+    else:
+        conn = sqlite3.connect(path)
+        conn.row_factory = sqlite3.Row
+        try:
+            yield conn
+            conn.commit()
+        except Exception:
+            conn.rollback()
+            raise
+        finally:
+            conn.close()
+
+
+def _execute(conn: object, query: str, params: tuple = ()) -> object:
+    if DATABASE_URL:
+        query = query.replace("?", "%s")
+        cur = conn.cursor() # type: ignore[attr-defined]
+        cur.execute(query, params)
+        return cur
+    else:
+        return conn.execute(query, params) # type: ignore[attr-defined]
+
+
+def _executemany(conn: object, query: str, params_list: list[tuple]) -> object:
+    if DATABASE_URL:
+        query = query.replace("?", "%s")
+        cur = conn.cursor() # type: ignore[attr-defined]
+        cur.executemany(query, params_list)
+        return cur
+    else:
+        return conn.executemany(query, params_list) # type: ignore[attr-defined]
+
+
+def _executescript(conn: object, sql: str) -> None:
+    if DATABASE_URL:
+        with conn.cursor() as cur: # type: ignore[attr-defined]
+            cur.execute(sql)
+    else:
+        conn.executescript(sql) # type: ignore[attr-defined]
 
 
 def init_db(path: str | Path) -> None:
     """Initialise the database, migrating from single-user schema if needed."""
     with connect(path) as conn:
-        # Detect old single-user schema (no user_token column) and drop it so
-        # the new multi-user schema is applied cleanly.
-        try:
-            cols = [row[1] for row in conn.execute("PRAGMA table_info(settings)").fetchall()]
-            if cols and "user_token" not in cols:
-                conn.executescript(
-                    "DROP TABLE IF EXISTS settings; DROP TABLE IF EXISTS timetable_events;"
-                )
-        except Exception:
-            pass
+        if not DATABASE_URL:
+            # Detect old single-user schema (no user_token column) and drop it so
+            # the new multi-user schema is applied cleanly.
+            try:
+                cols = [row[1] for row in conn.execute("PRAGMA table_info(settings)").fetchall()] # type: ignore[attr-defined]
+                if cols and "user_token" not in cols:
+                    conn.executescript( # type: ignore[attr-defined]
+                        "DROP TABLE IF EXISTS settings; DROP TABLE IF EXISTS timetable_events;"
+                    )
+            except Exception:
+                pass
 
-        # Migrate mandatory_sessions to global central store schema if it has old format
-        try:
-            cols = [row[1] for row in conn.execute("PRAGMA table_info(mandatory_sessions)").fetchall()]
-            if cols and "user_token" in cols:
-                conn.execute("DROP TABLE IF EXISTS mandatory_sessions")
-        except Exception:
-            pass
+            # Migrate mandatory_sessions to global central store schema if it has old format
+            try:
+                cols = [row[1] for row in conn.execute("PRAGMA table_info(mandatory_sessions)").fetchall()] # type: ignore[attr-defined]
+                if cols and "user_token" in cols:
+                    conn.execute("DROP TABLE IF EXISTS mandatory_sessions") # type: ignore[attr-defined]
+            except Exception:
+                pass
 
-        conn.executescript(
+        _executescript(
+            conn,
             """
             CREATE TABLE IF NOT EXISTS settings (
                 user_token TEXT NOT NULL,
@@ -70,7 +119,7 @@ def init_db(path: str | Path) -> None:
                 session_nums TEXT NOT NULL,
                 updated_at   TEXT NOT NULL
             );
-            """
+            """,
         )
 
 
@@ -78,7 +127,8 @@ def init_db(path: str | Path) -> None:
 
 def set_setting(path: str | Path, user_token: str, key: str, value: object) -> None:
     with connect(path) as conn:
-        conn.execute(
+        _execute(
+            conn,
             "INSERT INTO settings(user_token, key, value) VALUES(?, ?, ?) "
             "ON CONFLICT(user_token, key) DO UPDATE SET value = excluded.value",
             (user_token, key, json.dumps(value)),
@@ -87,16 +137,18 @@ def set_setting(path: str | Path, user_token: str, key: str, value: object) -> N
 
 def get_setting(path: str | Path, user_token: str, key: str, default: object = None) -> object:
     with connect(path) as conn:
-        row = conn.execute(
+        row = _execute(
+            conn,
             "SELECT value FROM settings WHERE user_token = ? AND key = ?",
             (user_token, key),
-        ).fetchone()
+        ).fetchone() # type: ignore[attr-defined]
     return json.loads(row["value"]) if row else default
 
 
 def delete_setting(path: str | Path, user_token: str, key: str) -> None:
     with connect(path) as conn:
-        conn.execute(
+        _execute(
+            conn,
             "DELETE FROM settings WHERE user_token = ? AND key = ?",
             (user_token, key),
         )
@@ -105,15 +157,16 @@ def delete_setting(path: str | Path, user_token: str, key: str) -> None:
 def get_all_users_with_credentials(path: str | Path) -> list[str]:
     """Return user_tokens that have both TCS and Google credentials saved."""
     with connect(path) as conn:
-        rows = conn.execute(
+        rows = _execute(
+            conn,
             """
             SELECT user_token
             FROM settings
             WHERE key IN ('tcs_credentials_encrypted', 'google_credentials')
             GROUP BY user_token
             HAVING COUNT(DISTINCT key) = 2
-            """
-        ).fetchall()
+            """,
+        ).fetchall() # type: ignore[attr-defined]
     return [row[0] for row in rows]
 
 
@@ -121,14 +174,15 @@ def get_all_users_with_credentials(path: str | Path) -> list[str]:
 
 def clear_events(path: str | Path, user_token: str) -> None:
     with connect(path) as conn:
-        conn.execute("DELETE FROM timetable_events WHERE user_token = ?", (user_token,))
+        _execute(conn, "DELETE FROM timetable_events WHERE user_token = ?", (user_token,))
 
 
 def save_events(path: str | Path, user_token: str, events: list[TimetableEvent]) -> None:
     now = datetime.now(UTC).isoformat()
     with connect(path) as conn:
         for event in events:
-            conn.execute(
+            _execute(
+                conn,
                 "INSERT INTO timetable_events(user_token, uid, payload, updated_at) VALUES(?, ?, ?, ?) "
                 "ON CONFLICT(user_token, uid) DO UPDATE SET payload = excluded.payload, updated_at = excluded.updated_at",
                 (user_token, event.uid, json.dumps(event.google_payload()), now),
@@ -137,11 +191,12 @@ def save_events(path: str | Path, user_token: str, events: list[TimetableEvent])
 
 def list_event_payloads(path: str | Path, user_token: str) -> list[dict]:
     with connect(path) as conn:
-        rows = conn.execute(
+        rows = _execute(
+            conn,
             "SELECT uid, payload, synced_event_id FROM timetable_events "
             "WHERE user_token = ? ORDER BY uid",
             (user_token,),
-        ).fetchall()
+        ).fetchall() # type: ignore[attr-defined]
     payloads = []
     for row in rows:
         payload = json.loads(row["payload"])
@@ -153,7 +208,8 @@ def list_event_payloads(path: str | Path, user_token: str) -> list[dict]:
 
 def mark_synced(path: str | Path, user_token: str, uid: str, google_event_id: str) -> None:
     with connect(path) as conn:
-        conn.execute(
+        _execute(
+            conn,
             "UPDATE timetable_events SET synced_event_id = ? WHERE user_token = ? AND uid = ?",
             (google_event_id, user_token, uid),
         )
@@ -161,7 +217,8 @@ def mark_synced(path: str | Path, user_token: str, uid: str, google_event_id: st
 
 def mark_many_synced(path: str | Path, user_token: str, event_ids: dict[str, str]) -> None:
     with connect(path) as conn:
-        conn.executemany(
+        _executemany(
+            conn,
             "UPDATE timetable_events SET synced_event_id = ? WHERE user_token = ? AND uid = ?",
             [(event_id, user_token, uid) for uid, event_id in event_ids.items()],
         )
@@ -176,7 +233,8 @@ def save_mandatory_sessions(
     now = datetime.now(UTC).isoformat()
     with connect(path) as conn:
         for course_code, session_nums in mandatory_sessions.items():
-            conn.execute(
+            _execute(
+                conn,
                 "INSERT INTO mandatory_sessions(course_code, session_nums, updated_at) "
                 "VALUES(?, ?, ?) "
                 "ON CONFLICT(course_code) DO UPDATE SET "
@@ -189,9 +247,10 @@ def get_mandatory_sessions(path: str | Path) -> dict[str, list[int]]:
     """Load mandatory session data centrally as course_code → list[int]."""
     res: dict[str, list[int]] = {}
     with connect(path) as conn:
-        rows = conn.execute(
-            "SELECT course_code, session_nums FROM mandatory_sessions ORDER BY updated_at ASC"
-        ).fetchall()
+        rows = _execute(
+            conn,
+            "SELECT course_code, session_nums FROM mandatory_sessions ORDER BY updated_at ASC",
+        ).fetchall() # type: ignore[attr-defined]
         for row in rows:
             res[row["course_code"]] = json.loads(row["session_nums"])
     return res
@@ -200,11 +259,12 @@ def get_mandatory_sessions(path: str | Path) -> dict[str, list[int]]:
 def clear_mandatory_sessions(path: str | Path) -> None:
     """Remove all central mandatory session records."""
     with connect(path) as conn:
-        conn.execute("DELETE FROM mandatory_sessions")
+        _execute(conn, "DELETE FROM mandatory_sessions")
 
 
 def get_all_user_tokens(path: str | Path) -> list[str]:
     """Get all unique user tokens stored in the settings table."""
     with connect(path) as conn:
-        rows = conn.execute("SELECT DISTINCT user_token FROM settings").fetchall()
+        rows = _execute(conn, "SELECT DISTINCT user_token FROM settings").fetchall() # type: ignore[attr-defined]
     return [row[0] for row in rows]
+

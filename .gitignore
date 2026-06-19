@@ -12,4 +12,5 @@ client_secret*.json
 *.har
 # OS
 .DS_Store
-Thumbs.db
+# PDF course outlines
+*.pdf
