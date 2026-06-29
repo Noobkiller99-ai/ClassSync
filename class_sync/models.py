@@ -63,6 +63,8 @@ class TimetableEvent:
                 "private": {
                     "classSyncUid": self.uid,
                     "mandatory": "true" if self.mandatory else "false",
+                    "courseCode": self.course_code.split("-")[0].strip().upper() if self.course_code else "",
+                    "sessionNumber": self.session_number or "",
                 }
             },
         }

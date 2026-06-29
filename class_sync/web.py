@@ -111,6 +111,13 @@ def create_app(test_config: dict | None = None) -> Flask:
                 raw = creds.get("username", "").split("@")[0]
                 username = raw.replace(".", " ").title()
 
+        # Derive Google email from stored credentials
+        google_email = ""
+        if google_ready:
+            g_creds = get_setting(db, tok, "google_credentials", None)
+            if isinstance(g_creds, dict):
+                google_email = g_creds.get("email", "")
+
         event_groups = _group_events(events_raw)
         return render_template(
             "index.html",
@@ -126,6 +133,7 @@ def create_app(test_config: dict | None = None) -> Flask:
             batch=batch,
             sample_mode=app.config["USE_SAMPLE_TCS"],
             admin_enabled=bool(app.config["ADMIN_TOKEN"]),
+            google_email=google_email,
         )
 
     @app.post("/tcs/login")
@@ -268,20 +276,29 @@ def create_app(test_config: dict | None = None) -> Flask:
                 "warning",
             )
             return redirect(url_for("index"))
-        if not get_setting(db, tok, "google_credentials", None):
-            session["post_google_redirect"] = "sync"
-            return redirect(url_for("google_login"))
-        try:
-            result = _sync_calendar(app, tok)
-            flash(f"Synced! {result.imported} events added to your Google Calendar.", "success")
-        except Exception as exc:
-            flash(f"Calendar sync failed: {exc}", "error")
-        return redirect(url_for("index"))
+        stored_creds = get_setting(db, tok, "google_credentials", None)
+        if _google_credentials_valid(stored_creds):
+            # Credentials already stored and valid — sync directly without re-authenticating.
+            try:
+                result = _sync_calendar(app, tok)
+                flash(f"Synced! {result.imported} events added to your Google Calendar.", "success")
+            except Exception as exc:
+                flash(f"Calendar sync failed: {exc}", "error")
+            return redirect(url_for("index"))
+        # No valid credentials yet — start the OAuth flow.
+        session["post_google_redirect"] = "sync"
+        return redirect(url_for("google_login"))
 
     @app.get("/google/login")
     def google_login():
+        tok = _user_token()
+        db = app.config["DATABASE"]
+        # If the user already had credentials, this is a re-auth — use the
+        # simplified prompt so they just click their saved account.
+        existing_creds = get_setting(db, tok, "google_credentials", None)
+        is_reauth = _google_credentials_valid(existing_creds)
         client = GoogleCalendarClient()
-        auth_url, state = client.authorization_url_with_state()
+        auth_url, state = client.authorization_url_with_state(reauth=is_reauth)
         if state:
             session["google_oauth_state"] = state
         return redirect(auth_url)
@@ -569,6 +586,19 @@ def _get_user_batch(app: Flask, user_token: str) -> str:
     return "general"
 
 
+def _google_credentials_valid(credentials: object) -> bool:
+    """Return True if *credentials* look usable without a fresh OAuth round-trip.
+
+    A credential dict is valid as long as it has a refresh_token; the Google
+    client library will transparently refresh the access token as needed.
+    """
+    if not isinstance(credentials, dict):
+        return False
+    if credentials.get("dry_run"):
+        return True
+    return bool(credentials.get("refresh_token"))
+
+
 # Public aliases used by tests
 fetch_timetable = _fetch_timetable
 sync_calendar = _sync_calendar
@@ -576,3 +606,4 @@ stored_tcs_credentials = _stored_tcs_credentials
 sync_window_now = _sync_window_now
 extract_batch_from_email = _extract_batch_from_email
 get_user_batch = _get_user_batch
+google_credentials_valid = _google_credentials_valid

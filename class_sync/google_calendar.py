@@ -44,17 +44,26 @@ class GoogleCalendarClient:
         )
         return url
 
-    def authorization_url_with_state(self) -> tuple[str, str]:
-        """Return (url, state) for CSRF-safe OAuth. Use with real Google accounts."""
+    def authorization_url_with_state(self, reauth: bool = False) -> tuple[str, str]:
+        """Return (url, state) for CSRF-safe OAuth. Use with real Google accounts.
+
+        Args:
+            reauth: If True (re-connecting an already-linked account), omit the
+                    ``consent`` prompt so the user can simply click their saved
+                    account instead of seeing the full re-consent screen.
+                    Set False (default) on first-time auth to guarantee a
+                    refresh_token is returned.
+        """
         if self.dry_run:
             return "/google/callback?dry_run=1", ""
         from google_auth_oauthlib.flow import Flow
 
         flow = self._flow()
+        prompt = "select_account" if reauth else "select_account consent"
         url, state = flow.authorization_url(
             access_type="offline",
             include_granted_scopes="true",
-            prompt="select_account consent",  # force account picker + re-consent for new scopes
+            prompt=prompt,
         )
         return url, state
 
@@ -131,6 +140,7 @@ class GoogleCalendarClient:
         # Retrieve existing calendar events to avoid creating duplicates
         existing_by_uid = {}
         existing_by_time_title = {}
+        existing_by_code_session: dict[tuple[str, str], str] = {}
         try:
             page_token = None
             while True:
@@ -141,10 +151,17 @@ class GoogleCalendarClient:
                     maxResults=250
                 ).execute()
                 for item in events_result.get("items", []):
-                    # Check private extended properties for our custom unique ID
-                    uid = item.get("extendedProperties", {}).get("private", {}).get("classSyncUid")
+                    private = item.get("extendedProperties", {}).get("private", {})
+                    # Index by our custom unique ID
+                    uid = private.get("classSyncUid")
                     if uid:
                         existing_by_uid[uid] = item["id"]
+
+                    # Index by (courseCode, sessionNumber) for upsert logic
+                    code = private.get("courseCode", "").strip().upper()
+                    sess = private.get("sessionNumber", "").strip()
+                    if code and sess:
+                        existing_by_code_session[(code, sess)] = item["id"]
 
                     # Also index by time and title to catch events synced without private properties
                     start_dt = item.get("start", {}).get("dateTime")
@@ -167,15 +184,47 @@ class GoogleCalendarClient:
             uid = event["uid"]
             google_id = event.get("synced_event_id")
 
-            # Duplicate prevention check
-            if not google_id:
-                if uid in existing_by_uid:
-                    google_id = existing_by_uid[uid]
-                else:
-                    starts_at_iso = event["start"]["dateTime"][:19]
-                    norm_title = event["summary"].replace("🔴 MANDATORY: ", "").strip()
-                    if (norm_title, starts_at_iso) in existing_by_time_title:
-                        google_id = existing_by_time_title[(norm_title, starts_at_iso)]
+            # --- Determine the normalised code+session key for this payload ---
+            private_props = event.get("extendedProperties", {}).get("private", {})
+            payload_code = private_props.get("courseCode", "").strip().upper()
+            payload_sess = private_props.get("sessionNumber", "").strip()
+            code_session_key = (payload_code, payload_sess) if (payload_code and payload_sess) else None
+
+            # --- Check: does an event with the same code+session already exist? ---
+            # If yes, delete the old event and insert a fresh one so any
+            # rescheduled / renamed session is fully replaced on the calendar.
+            stale_by_code_session: str | None = None
+            if code_session_key and code_session_key in existing_by_code_session:
+                candidate_id = existing_by_code_session[code_session_key]
+                # Only treat it as stale if the UID does NOT already match
+                # (same event, just being updated via UID path below)
+                if candidate_id != existing_by_uid.get(uid):
+                    stale_by_code_session = candidate_id
+
+            if stale_by_code_session:
+                # Delete the outdated event, then fall through to insert a fresh one
+                try:
+                    service.events().delete(
+                        calendarId=calendar_id, eventId=stale_by_code_session
+                    ).execute()
+                    logger.info("Deleted stale event %s (code=%s, session=%s)", stale_by_code_session, payload_code, payload_sess)
+                except Exception as del_exc:
+                    logger.warning("Could not delete stale event %s: %s", stale_by_code_session, del_exc)
+                # Remove from all indices so we don't re-match it
+                del existing_by_code_session[code_session_key]
+                existing_by_uid = {k: v for k, v in existing_by_uid.items() if v != stale_by_code_session}
+                existing_by_time_title = {k: v for k, v in existing_by_time_title.items() if v != stale_by_code_session}
+                google_id = None  # force insert below
+            else:
+                # Standard duplicate prevention check (UID or time+title)
+                if not google_id:
+                    if uid in existing_by_uid:
+                        google_id = existing_by_uid[uid]
+                    else:
+                        starts_at_iso = event["start"]["dateTime"][:19]
+                        norm_title = event["summary"].replace("🔴 MANDATORY: ", "").strip()
+                        if (norm_title, starts_at_iso) in existing_by_time_title:
+                            google_id = existing_by_time_title[(norm_title, starts_at_iso)]
 
             if google_id:
                 try:
