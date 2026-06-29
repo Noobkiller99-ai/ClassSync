@@ -452,7 +452,9 @@ def _sync_window_now(app: Flask) -> datetime | None:
 
 def _group_events(events: list[dict]) -> list[dict]:
     """Group a flat list of serialised events into day buckets for the template."""
+    from datetime import timedelta
     today = datetime.now().date()
+    tomorrow = today + timedelta(days=1)
     sorted_events = sorted(events, key=lambda e: e.get("starts_at", ""))
     groups: list[dict] = []
     for date_str, day_iter in groupby(
@@ -463,8 +465,8 @@ def _group_events(events: list[dict]) -> list[dict]:
             is_today = d == today
             if is_today:
                 label = f"Today · {d.strftime('%A, %b %d')}"
-            elif d == today.replace(day=today.day + 1) if today.day < 28 else today:
-                label = d.strftime("%A, %b %d")
+            elif d == tomorrow:
+                label = f"Tomorrow · {d.strftime('%A, %b %d')}"
             else:
                 label = d.strftime("%A, %b %d")
         except Exception:
@@ -479,6 +481,7 @@ def _group_events(events: list[dict]) -> list[dict]:
             }
         )
     return groups
+
 
 
 

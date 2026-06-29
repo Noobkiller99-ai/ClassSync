@@ -122,6 +122,10 @@ class GoogleCalendarClient:
                 )
             return SyncResult("dry-run-spjimr-timetable", True, len(event_payloads), True, event_ids)
 
+        # Short-circuit: nothing to sync, skip all API calls
+        if not event_payloads:
+            return SyncResult("", False, 0, False, {})
+
         import logging
         logger = logging.getLogger(__name__)
 
@@ -137,7 +141,14 @@ class GoogleCalendarClient:
         service = build("calendar", "v3", credentials=credentials)
         calendar_id, created = self._ensure_calendar(service)
 
-        # Retrieve existing calendar events to avoid creating duplicates
+        # Retrieve existing calendar events to avoid creating duplicates.
+        # timeMin restricts to events starting from yesterday, cutting API payload significantly
+        # and avoiding matching against long-past sessions.
+        import datetime as _dt
+        time_min = (
+            _dt.datetime.now(_dt.timezone.utc) - _dt.timedelta(days=1)
+        ).strftime("%Y-%m-%dT%H:%M:%SZ")
+
         existing_by_uid = {}
         existing_by_time_title = {}
         existing_by_code_session: dict[tuple[str, str], str] = {}
@@ -148,7 +159,8 @@ class GoogleCalendarClient:
                     calendarId=calendar_id,
                     pageToken=page_token,
                     singleEvents=True,
-                    maxResults=250
+                    maxResults=250,
+                    timeMin=time_min,
                 ).execute()
                 for item in events_result.get("items", []):
                     private = item.get("extendedProperties", {}).get("private", {})

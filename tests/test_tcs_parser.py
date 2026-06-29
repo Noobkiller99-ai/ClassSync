@@ -28,7 +28,8 @@ def test_google_payload_contract():
     event = parse_tcs_attendance((ROOT / "scripts" / "attendance_sample.json").read_text(encoding="utf-8"))[0]
     payload = event.google_payload()
 
-    assert payload["summary"] == event.subject_name
+    # summary must equal event.title (which adds "🔴 MANDATORY: " prefix for mandatory events)
+    assert payload["summary"] == event.title
     assert f"Source: {SOURCE}" in payload["description"]
     assert payload["start"]["timeZone"] == TIMEZONE
     assert payload["reminders"]["overrides"][0]["minutes"] == DEFAULT_REMINDER_MINUTES
