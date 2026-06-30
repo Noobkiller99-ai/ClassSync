@@ -190,6 +190,15 @@ class GoogleCalendarClient:
         except Exception as e:
             logger.warning("Failed to list existing calendar events: %s", e)
 
+        # Pre-compute the full set of uids being synced so the stale-event check
+        # can distinguish "this event belongs to a DIFFERENT payload item" (don't
+        # delete it) from "this event is no longer in the timetable at all" (stale).
+        payload_uid_set = {ev["uid"] for ev in event_payloads}
+
+        # Reverse map: google_event_id → classSyncUid, used to identify whose uid
+        # owns a Google Calendar event during stale detection.
+        existing_uid_by_google_id: dict[str, str] = {v: k for k, v in existing_by_uid.items()}
+
         imported = 0
         for event in event_payloads:
             body = {key: value for key, value in event.items() if key not in {"uid", "synced_event_id"}}
@@ -202,41 +211,59 @@ class GoogleCalendarClient:
             payload_sess = private_props.get("sessionNumber", "").strip()
             code_session_key = (payload_code, payload_sess) if (payload_code and payload_sess) else None
 
-            # --- Check: does an event with the same code+session already exist? ---
-            # If yes, delete the old event and insert a fresh one so any
-            # rescheduled / renamed session is fully replaced on the calendar.
+            # --- Stale-event detection via (courseCode, sessionNumber) ---
+            # A Google Calendar event is "stale" when:
+            #   - It shares the same (code, session) as this incoming payload, AND
+            #   - Its own classSyncUid is NOT in the current payload's uid set
+            #     (meaning TCS no longer returns that event — it was rescheduled/removed).
+            # We do NOT mark it stale if another payload event legitimately owns it
+            # (e.g. two real sessions of the same course at different times).
             stale_by_code_session: str | None = None
             if code_session_key and code_session_key in existing_by_code_session:
                 candidate_id = existing_by_code_session[code_session_key]
-                # Only treat it as stale if the UID does NOT already match
-                # (same event, just being updated via UID path below)
-                if candidate_id != existing_by_uid.get(uid):
+                candidate_uid = existing_uid_by_google_id.get(candidate_id)
+                # Only stale if the owning uid is absent from this sync's payload
+                if candidate_uid not in payload_uid_set:
                     stale_by_code_session = candidate_id
 
             if stale_by_code_session:
-                # Delete the outdated event, then fall through to insert a fresh one
+                # Delete the outdated Google Calendar event
                 try:
                     service.events().delete(
                         calendarId=calendar_id, eventId=stale_by_code_session
                     ).execute()
-                    logger.info("Deleted stale event %s (code=%s, session=%s)", stale_by_code_session, payload_code, payload_sess)
+                    logger.info(
+                        "Deleted stale event %s (code=%s, session=%s)",
+                        stale_by_code_session, payload_code, payload_sess,
+                    )
                 except Exception as del_exc:
-                    logger.warning("Could not delete stale event %s: %s", stale_by_code_session, del_exc)
-                # Remove from all indices so we don't re-match it
+                    logger.warning(
+                        "Could not delete stale event %s: %s", stale_by_code_session, del_exc
+                    )
+                # Remove the deleted event from all indices
                 del existing_by_code_session[code_session_key]
                 existing_by_uid = {k: v for k, v in existing_by_uid.items() if v != stale_by_code_session}
-                existing_by_time_title = {k: v for k, v in existing_by_time_title.items() if v != stale_by_code_session}
-                google_id = None  # force insert below
-            else:
-                # Standard duplicate prevention check (UID or time+title)
-                if not google_id:
-                    if uid in existing_by_uid:
-                        google_id = existing_by_uid[uid]
-                    else:
-                        starts_at_iso = event["start"]["dateTime"][:19]
-                        norm_title = event["summary"].replace("🔴 MANDATORY: ", "").strip()
-                        if (norm_title, starts_at_iso) in existing_by_time_title:
-                            google_id = existing_by_time_title[(norm_title, starts_at_iso)]
+                existing_uid_by_google_id.pop(stale_by_code_session, None)
+                existing_by_time_title = {
+                    k: v for k, v in existing_by_time_title.items() if v != stale_by_code_session
+                }
+                # ── KEY FIX ──────────────────────────────────────────────────────
+                # Only clear google_id if it was pointing to the now-deleted stale
+                # event.  If synced_event_id references a DIFFERENT surviving Google
+                # event (the legitimate one for this uid), keep it — we'll UPDATE
+                # rather than INSERT and create a duplicate.
+                if google_id == stale_by_code_session:
+                    google_id = None  # stale event gone; force INSERT below
+
+            # Standard duplicate prevention: UID match → time+title match
+            if not google_id:
+                if uid in existing_by_uid:
+                    google_id = existing_by_uid[uid]
+                else:
+                    starts_at_iso = event["start"]["dateTime"][:19]
+                    norm_title = event["summary"].replace("🔴 MANDATORY: ", "").strip()
+                    if (norm_title, starts_at_iso) in existing_by_time_title:
+                        google_id = existing_by_time_title[(norm_title, starts_at_iso)]
 
             if google_id:
                 try:

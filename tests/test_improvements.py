@@ -186,7 +186,8 @@ def _make_mock_service(existing_items):
 
 def test_upsert_deletes_stale_and_inserts_fresh():
     """When a new payload matches an existing event by (courseCode, sessionNumber)
-    but has a different UID, the old event must be deleted and a fresh one inserted."""
+    but the existing event's uid is NOT in the incoming payload, the old event must
+    be deleted and a fresh one inserted (rescheduled session scenario)."""
     from class_sync.google_calendar import GoogleCalendarClient
 
     stale_item = {
@@ -195,7 +196,7 @@ def test_upsert_deletes_stale_and_inserts_fresh():
         "start": {"dateTime": "2026-06-10T10:40:00+05:30"},
         "extendedProperties": {
             "private": {
-                "classSyncUid": "old-uid",
+                "classSyncUid": "old-uid",   # uid NOT in payload → stale
                 "courseCode": "FIN521",
                 "sessionNumber": "3",
             }
@@ -211,7 +212,7 @@ def test_upsert_deletes_stale_and_inserts_fresh():
     ]
     mock_service.events().insert().execute.return_value = {"id": "new-google-id"}
 
-    # New payload for same course+session but a DIFFERENT uid (e.g. rescheduled)
+    # New payload for same course+session with a DIFFERENT uid (e.g. rescheduled)
     payloads = [
         {
             "uid": "new-uid",
@@ -236,10 +237,164 @@ def test_upsert_deletes_stale_and_inserts_fresh():
     mock_service.events().delete.assert_called_once_with(
         calendarId="cal-id", eventId="stale-event-id"
     )
-    # insert must have been called (not update)
+    # insert must have been called (not update) because new-uid has no synced_event_id
     assert mock_service.events().insert.called
     assert not mock_service.events().update.called
     assert result.event_ids["new-uid"] == "new-google-id"
+
+
+def test_resync_no_duplicate_when_synced_event_id_valid():
+    """
+    REGRESSION: Re-sync must NOT create a duplicate event when:
+    - The payload event has a valid synced_event_id pointing to its existing Google event
+    - existing_by_code_session happens to contain a STALE ghost event from a previous
+      buggy run (different uid, same code+session)
+
+    Expected: delete the ghost, UPDATE the legitimate event via synced_event_id.
+    """
+    from class_sync.google_calendar import GoogleCalendarClient
+
+    legitimate_item = {
+        "id": "legit-id",
+        "summary": "Financial Innovations & Fintech",
+        "start": {"dateTime": "2026-06-10T10:40:00+05:30"},
+        "extendedProperties": {
+            "private": {
+                "classSyncUid": "uid-1",
+                "courseCode": "FIN521",
+                "sessionNumber": "1",
+            }
+        },
+    }
+    ghost_item = {
+        "id": "ghost-id",
+        "summary": "Financial Innovations & Fintech",
+        "start": {"dateTime": "2026-06-10T10:40:00+05:30"},
+        "extendedProperties": {
+            "private": {
+                # uid NOT in the incoming payload — this is the orphaned ghost
+                "classSyncUid": "old-orphan-uid",
+                "courseCode": "FIN521",
+                "sessionNumber": "1",
+            }
+        },
+    }
+
+    mock_service = MagicMock()
+    mock_service.calendarList().list().execute.return_value = {
+        "items": [{"id": "cal-id", "summary": "SPJIMR Timetable"}]
+    }
+    # Google Calendar has BOTH the legitimate event AND the ghost
+    mock_service.events().list().execute.side_effect = [
+        {"items": [legitimate_item, ghost_item], "nextPageToken": None}
+    ]
+    mock_service.events().update().execute.return_value = {"id": "legit-id"}
+
+    payloads = [
+        {
+            "uid": "uid-1",
+            "synced_event_id": "legit-id",   # points to the legitimate event
+            "summary": "Financial Innovations & Fintech",
+            "start": {"dateTime": "2026-06-10T10:40:00"},
+            "end": {"dateTime": "2026-06-10T11:50:00"},
+            "extendedProperties": {
+                "private": {
+                    "classSyncUid": "uid-1",
+                    "courseCode": "FIN521",
+                    "sessionNumber": "1",
+                }
+            },
+        }
+    ]
+
+    with patch("googleapiclient.discovery.build", return_value=mock_service):
+        client = GoogleCalendarClient(credentials={"token": "tok", "refresh_token": "r"})
+        result = client.sync(payloads)
+
+    # Ghost must be deleted
+    mock_service.events().delete.assert_called_once_with(
+        calendarId="cal-id", eventId="ghost-id"
+    )
+    # Legitimate event must be UPDATED (not inserted) — no duplicate!
+    assert mock_service.events().update.called
+    assert not mock_service.events().insert.called
+    assert result.event_ids["uid-1"] == "legit-id"
+
+
+def test_two_legitimate_sessions_same_code_session_both_kept():
+    """
+    Two real TCS events for the same (course, session) at DIFFERENT times must
+    both be kept in Google Calendar — neither should be deleted.
+    """
+    from class_sync.google_calendar import GoogleCalendarClient
+
+    item_a = {
+        "id": "gid-a",
+        "summary": "Financial Innovations & Fintech",
+        "start": {"dateTime": "2026-06-10T10:40:00+05:30"},
+        "extendedProperties": {
+            "private": {
+                "classSyncUid": "uid-a",
+                "courseCode": "FIN521",
+                "sessionNumber": "3",
+            }
+        },
+    }
+    item_b = {
+        "id": "gid-b",
+        "summary": "Financial Innovations & Fintech",
+        "start": {"dateTime": "2026-06-13T10:40:00+05:30"},
+        "extendedProperties": {
+            "private": {
+                "classSyncUid": "uid-b",
+                "courseCode": "FIN521",
+                "sessionNumber": "3",
+            }
+        },
+    }
+
+    mock_service = MagicMock()
+    mock_service.calendarList().list().execute.return_value = {
+        "items": [{"id": "cal-id", "summary": "SPJIMR Timetable"}]
+    }
+    mock_service.events().list().execute.side_effect = [
+        {"items": [item_a, item_b], "nextPageToken": None}
+    ]
+    mock_service.events().update().execute.side_effect = [
+        {"id": "gid-a"}, {"id": "gid-b"}
+    ]
+
+    # Both events are in the payload (both uid-a and uid-b present)
+    payloads = [
+        {
+            "uid": "uid-a",
+            "synced_event_id": "gid-a",
+            "summary": "Financial Innovations & Fintech",
+            "start": {"dateTime": "2026-06-10T10:40:00"},
+            "end": {"dateTime": "2026-06-10T11:50:00"},
+            "extendedProperties": {"private": {"classSyncUid": "uid-a", "courseCode": "FIN521", "sessionNumber": "3"}},
+        },
+        {
+            "uid": "uid-b",
+            "synced_event_id": "gid-b",
+            "summary": "Financial Innovations & Fintech",
+            "start": {"dateTime": "2026-06-13T10:40:00"},
+            "end": {"dateTime": "2026-06-13T11:50:00"},
+            "extendedProperties": {"private": {"classSyncUid": "uid-b", "courseCode": "FIN521", "sessionNumber": "3"}},
+        },
+    ]
+
+    with patch("googleapiclient.discovery.build", return_value=mock_service):
+        client = GoogleCalendarClient(credentials={"token": "tok", "refresh_token": "r"})
+        result = client.sync(payloads)
+
+    # Neither event should be deleted — both are legitimate
+    mock_service.events().delete.assert_not_called()
+    # Both should be updated (call_count includes the setup call from side_effect fixture)
+    assert mock_service.events().update.call_count >= 2
+    assert result.event_ids["uid-a"] == "gid-a"
+    assert result.event_ids["uid-b"] == "gid-b"
+
 
 
 def test_upsert_does_not_delete_when_uid_matches():
