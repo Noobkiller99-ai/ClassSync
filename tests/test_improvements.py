@@ -1157,3 +1157,141 @@ def test_group_events_month_boundary_no_crash():
     groups = _group_events(events)
     assert len(groups) == len(boundary_dates)
 
+
+# ═══════════════════════════════════════════════════════════════════════════════
+# 22. Evaluations Support (📝 title prefix and Tangerine Orange color ID 6)
+# ═══════════════════════════════════════════════════════════════════════════════
+
+def test_evaluation_formatting():
+    from class_sync.models import TimetableEvent
+
+    # 1. Non-mandatory evaluation
+    ev1 = TimetableEvent(
+        uid="uid-1", subject_name="Midterm Exam", course_code="FIN521",
+        faculty="Dr. Shekhar", classroom="NCR5",
+        starts_at=datetime(2026, 6, 10, 10, 0), ends_at=datetime(2026, 6, 10, 11, 0),
+        session_number="3", activity_name="Evaluation"
+    )
+    assert ev1.is_evaluation is True
+    assert ev1.title == "📝 EVALUATION: Midterm Exam"
+    assert "📝 EVALUATION EVENT" in ev1.description
+    assert ev1.google_payload()["colorId"] == "6"
+
+    # 2. Mandatory evaluation
+    ev2 = TimetableEvent(
+        uid="uid-2", subject_name="Final Exam", course_code="FIN521",
+        faculty="Dr. Shekhar", classroom="NCR5",
+        starts_at=datetime(2026, 6, 10, 10, 0), ends_at=datetime(2026, 6, 10, 11, 0),
+        session_number="4", activity_name="Exam", mandatory=True
+    )
+    assert ev2.is_evaluation is True
+    assert ev2.title == "🔴 MANDATORY EVALUATION: Final Exam"
+    assert "⚠️ MANDATORY SESSION" in ev2.description
+    assert "📝 EVALUATION EVENT" in ev2.description
+    assert ev2.google_payload()["colorId"] == "11"
+
+
+# ═══════════════════════════════════════════════════════════════════════════════
+# 23. Deduplication of incoming parsed TCS events
+# ═══════════════════════════════════════════════════════════════════════════════
+
+def test_parse_tcs_attendance_deduplicates_incoming_list():
+    from class_sync.tcs import parse_tcs_attendance
+
+    # Timetable response containing exact duplicate rows (except possibly the outer JSON structure wrapper)
+    raw_payload = json.dumps([
+        {
+            "Item1": {
+                "dateval": "2026-06-10 00:00:00.0",
+                "start_time": "10:40am",
+                "end_time": "11:50am",
+                "sudsubjectname": "Financial Innovations & Fintech",
+                "sudsubjectshortcode": "FIN521-PDM",
+                "sudresourcename": "NCR5",
+                "slot_remarks": "3",
+                "sudactivityname": "Session"
+            }
+        },
+        {
+            "Item1": {
+                "dateval": "2026-06-10 00:00:00.0",
+                "start_time": "10:40am",
+                "end_time": "11:50am",
+                "sudsubjectname": "Financial Innovations & Fintech",
+                "sudsubjectshortcode": "FIN521-PDM",
+                "sudresourcename": "NCR5",
+                "slot_remarks": "3",
+                "sudactivityname": "Session"
+            }
+        }
+    ])
+
+    events = parse_tcs_attendance(raw_payload)
+    assert len(events) == 1  # The duplicate was successfully discarded!
+
+
+# ═══════════════════════════════════════════════════════════════════════════════
+# 24. Deleting duplicate events on listing from Google Calendar
+# ═══════════════════════════════════════════════════════════════════════════════
+
+def test_sync_deletes_duplicates_on_google_calendar():
+    from class_sync.google_calendar import GoogleCalendarClient
+
+    item_orig = {
+        "id": "g-id-orig",
+        "summary": "Financial Innovations & Fintech",
+        "start": {"dateTime": "2026-06-10T10:40:00+05:30"},
+        "extendedProperties": {
+            "private": {
+                "classSyncUid": "uid-1",
+                "courseCode": "FIN521",
+                "sessionNumber": "3",
+            }
+        },
+    }
+    item_dup = {
+        "id": "g-id-dup",
+        "summary": "Financial Innovations & Fintech",
+        "start": {"dateTime": "2026-06-10T10:40:00+05:30"},
+        "extendedProperties": {
+            "private": {
+                "classSyncUid": "uid-1-dup",
+                "courseCode": "FIN521",
+                "sessionNumber": "3",
+            }
+        },
+    }
+
+    mock_service = MagicMock()
+    mock_service.calendarList().list().execute.return_value = {
+        "items": [{"id": "cal-id", "summary": "SPJIMR Timetable"}]
+    }
+    mock_service.events().list().execute.side_effect = [
+        {"items": [item_orig, item_dup], "nextPageToken": None}
+    ]
+    mock_service.events().update().execute.return_value = {"id": "g-id-orig"}
+
+    payloads = [
+        {
+            "uid": "uid-1",
+            "synced_event_id": "g-id-orig",
+            "summary": "Financial Innovations & Fintech",
+            "start": {"dateTime": "2026-06-10T10:40:00"},
+            "end": {"dateTime": "2026-06-10T11:50:00"},
+            "extendedProperties": {"private": {"classSyncUid": "uid-1", "courseCode": "FIN521", "sessionNumber": "3"}},
+        }
+    ]
+
+    with patch("googleapiclient.discovery.build", return_value=mock_service):
+        client = GoogleCalendarClient(credentials={"token": "tok", "refresh_token": "r"})
+        result = client.sync(payloads)
+
+    # The duplicate must be deleted immediately in the listing phase
+    mock_service.events().delete.assert_called_once_with(
+        calendarId="cal-id", eventId="g-id-dup"
+    )
+    # The original must be updated
+    assert mock_service.events().update.called
+    assert result.event_ids["uid-1"] == "g-id-orig"
+
+

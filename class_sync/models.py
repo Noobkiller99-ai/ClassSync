@@ -26,9 +26,21 @@ class TimetableEvent:
     status: str = ""
     mandatory: bool = False
     session_number: str = ""   # e.g. "9" matching "Remarks" in TCS iON
+    activity_name: str = ""    # e.g. "Session", "Evaluation" etc.
+
+    @property
+    def is_evaluation(self) -> bool:
+        act = (self.activity_name or "").lower()
+        sub = (self.subject_name or "").lower()
+        return "evaluation" in act or "exam" in act or "evaluation" in sub or "exam" in sub
 
     @property
     def title(self) -> str:
+        if self.is_evaluation:
+            prefix = "📝 EVALUATION"
+            if self.mandatory:
+                prefix = "🔴 MANDATORY EVALUATION"
+            return f"{prefix}: {self.subject_name}"
         if self.mandatory:
             return f"🔴 MANDATORY: {self.subject_name}"
         return self.subject_name
@@ -41,10 +53,14 @@ class TimetableEvent:
             f"Classroom: {self.classroom or '-'}",
             f"Source: {SOURCE}",
         ]
+        if self.is_evaluation:
+            lines.insert(0, "📝 EVALUATION EVENT — Check guidelines/syllabus")
         if self.mandatory:
             lines.insert(0, "⚠️ MANDATORY SESSION — Attendance compulsory")
         if self.session_number:
             lines.append(f"Session No: {self.session_number}")
+        if self.activity_name:
+            lines.append(f"Activity: {self.activity_name}")
         return "\n".join(lines)
 
     def google_payload(self) -> dict:
@@ -65,11 +81,15 @@ class TimetableEvent:
                     "mandatory": "true" if self.mandatory else "false",
                     "courseCode": self.course_code.split("-")[0].strip().upper() if self.course_code else "",
                     "sessionNumber": self.session_number or "",
+                    "activityName": self.activity_name or "",
+                    "isEvaluation": "true" if self.is_evaluation else "false",
                 }
             },
         }
         if self.mandatory:
             payload["colorId"] = MANDATORY_COLOR_ID
+        elif self.is_evaluation:
+            payload["colorId"] = "6"  # Tangerine / Orange colorId for evaluations
         return payload
 
 

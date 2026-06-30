@@ -536,6 +536,7 @@ def _reapply_mandatory_flags(
                 status=e.get("status", ""),
                 mandatory=is_mandatory,
                 session_number=sess,
+                activity_name=e.get("activity_name", ""),
             )
         )
     set_setting(db, user_token, "preview_events", updated)

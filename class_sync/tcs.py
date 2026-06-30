@@ -53,6 +53,7 @@ def parse_tcs_datetime(date_value: str, time_value: str) -> datetime:
 def parse_tcs_attendance(payload: str | list[dict]) -> list[TimetableEvent]:
     rows = json.loads(payload) if isinstance(payload, str) else payload
     events: list[TimetableEvent] = []
+    seen = set()
     for index, row in enumerate(rows):
         item = row.get("Item1", row)
         date_value = clean(item.get("dateval"))
@@ -87,6 +88,16 @@ def parse_tcs_attendance(payload: str | list[dict]) -> list[TimetableEvent]:
         if session_number:
             num_match = re.search(r"(\d+)", session_number)
             session_number = num_match.group(1) if num_match else session_number
+            
+        activity_name = clean(item.get("sudactivityname"))
+
+        # Deduplicate incoming events to avoid duplicate records for the same course code, session number and time
+        norm_code = course_code.split("-")[0].strip().upper() if course_code else ""
+        dedup_key = (starts_at, ends_at, norm_code, subject.lower(), session_number)
+        if dedup_key in seen:
+            continue
+        seen.add(dedup_key)
+
         uid_bits = [
             clean(item.get("dateindex")) or starts_at.strftime("%Y%m%d"),
             starts_at.strftime("%H%M"),
@@ -106,6 +117,7 @@ def parse_tcs_attendance(payload: str | list[dict]) -> list[TimetableEvent]:
                 ends_at=ends_at,
                 status=clean(item.get("attendanceStatus") or item.get("status")),
                 session_number=session_number,
+                activity_name=activity_name,
             )
         )
     return events
@@ -149,6 +161,7 @@ def apply_mandatory_flags(
                 status=event.status,
                 mandatory=True,
                 session_number=event.session_number,
+                activity_name=event.activity_name,
             )
         result.append(event)
     return result
@@ -513,6 +526,7 @@ def serialize_events(events: Iterable[TimetableEvent]) -> list[dict]:
             "description": event.description,
             "mandatory": event.mandatory,
             "session_number": event.session_number,
+            "activity_name": event.activity_name,
         }
         for event in events
     ]

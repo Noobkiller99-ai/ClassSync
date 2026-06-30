@@ -152,6 +152,7 @@ class GoogleCalendarClient:
         existing_by_uid = {}
         existing_by_time_title = {}
         existing_by_code_session: dict[tuple[str, str], str] = {}
+        existing_by_code_session_time: dict[tuple[str, str, str], str] = {}
         try:
             page_token = None
             while True:
@@ -164,26 +165,58 @@ class GoogleCalendarClient:
                 ).execute()
                 for item in events_result.get("items", []):
                     private = item.get("extendedProperties", {}).get("private", {})
-                    # Index by our custom unique ID
+                    code = private.get("courseCode", "").strip().upper()
+                    sess = private.get("sessionNumber", "").strip()
+                    start_dt = item.get("start", {}).get("dateTime")
+                    summary = item.get("summary", "")
+
+                    # 1. Check for duplicates by (code, session, start_time) first
+                    is_dup = False
+                    if code and sess and start_dt:
+                        norm_start = start_dt[:19]
+                        key = (code, sess, norm_start)
+                        if key in existing_by_code_session_time:
+                            is_dup = True
+                            duplicate_id = item["id"]
+                            try:
+                                service.events().delete(
+                                    calendarId=calendar_id, eventId=duplicate_id
+                                ).execute()
+                                logger.info("Deleted duplicate calendar event %s (code=%s, session=%s, start=%s)", duplicate_id, code, sess, norm_start)
+                            except Exception as e:
+                                logger.warning("Failed to delete duplicate event %s: %s", duplicate_id, e)
+                        else:
+                            existing_by_code_session_time[key] = item["id"]
+
+                    # 2. Check for duplicates by time and title if not already deleted
+                    if not is_dup and start_dt and summary:
+                        norm_start = start_dt[:19]
+                        norm_title = summary.replace("🔴 MANDATORY: ", "").replace("📝 EVALUATION: ", "").replace("🔴 MANDATORY EVALUATION: ", "").strip()
+                        time_title_key = (norm_title, norm_start)
+                        if time_title_key in existing_by_time_title:
+                            is_dup = True
+                            duplicate_id = item["id"]
+                            try:
+                                service.events().delete(
+                                    calendarId=calendar_id, eventId=duplicate_id
+                                ).execute()
+                                logger.info("Deleted duplicate calendar event by time/title %s (%s at %s)", duplicate_id, norm_title, norm_start)
+                            except Exception as e:
+                                logger.warning("Failed to delete duplicate event %s: %s", duplicate_id, e)
+                        else:
+                            existing_by_time_title[time_title_key] = item["id"]
+
+                    # If it was a duplicate, do not index it
+                    if is_dup:
+                        continue
+
+                    # 3. Index remaining non-duplicate events
                     uid = private.get("classSyncUid")
                     if uid:
                         existing_by_uid[uid] = item["id"]
 
-                    # Index by (courseCode, sessionNumber) for upsert logic
-                    code = private.get("courseCode", "").strip().upper()
-                    sess = private.get("sessionNumber", "").strip()
                     if code and sess:
                         existing_by_code_session[(code, sess)] = item["id"]
-
-                    # Also index by time and title to catch events synced without private properties
-                    start_dt = item.get("start", {}).get("dateTime")
-                    summary = item.get("summary", "")
-                    if start_dt and summary:
-                        # Extract the first 19 chars to normalize starts_at (ignore timezone suffixes)
-                        # e.g. "2026-06-09T10:40:00+05:30" -> "2026-06-09T10:40:00"
-                        norm_start = start_dt[:19]
-                        norm_title = summary.replace("🔴 MANDATORY: ", "").strip()
-                        existing_by_time_title[(norm_title, norm_start)] = item["id"]
                 page_token = events_result.get("nextPageToken")
                 if not page_token:
                     break
@@ -247,6 +280,9 @@ class GoogleCalendarClient:
                 existing_by_time_title = {
                     k: v for k, v in existing_by_time_title.items() if v != stale_by_code_session
                 }
+                if code_session_key:
+                    starts_at_iso = event["start"]["dateTime"][:19]
+                    existing_by_code_session_time.pop((payload_code, payload_sess, starts_at_iso), None)
                 # ── KEY FIX ──────────────────────────────────────────────────────
                 # Only clear google_id if it was pointing to the now-deleted stale
                 # event.  If synced_event_id references a DIFFERENT surviving Google
@@ -261,9 +297,18 @@ class GoogleCalendarClient:
                     google_id = existing_by_uid[uid]
                 else:
                     starts_at_iso = event["start"]["dateTime"][:19]
-                    norm_title = event["summary"].replace("🔴 MANDATORY: ", "").strip()
-                    if (norm_title, starts_at_iso) in existing_by_time_title:
-                        google_id = existing_by_time_title[(norm_title, starts_at_iso)]
+                    
+                    # 1. Match by course code, session number, and time
+                    if code_session_key:
+                        time_key = (payload_code, payload_sess, starts_at_iso)
+                        if time_key in existing_by_code_session_time:
+                            google_id = existing_by_code_session_time[time_key]
+
+                    # 2. Fallback to time + title match
+                    if not google_id:
+                        norm_title = event["summary"].replace("🔴 MANDATORY: ", "").replace("📝 EVALUATION: ", "").replace("🔴 MANDATORY EVALUATION: ", "").strip()
+                        if (norm_title, starts_at_iso) in existing_by_time_title:
+                            google_id = existing_by_time_title[(norm_title, starts_at_iso)]
 
             if google_id:
                 try:
