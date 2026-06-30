@@ -188,19 +188,10 @@ def test_google_calendar_duplicate_prevention_and_color():
         assert result.event_ids["uid-3"] != "existing-google-id-1"  # New event inserted
         assert result.event_ids["uid-3"] != "existing-google-id-2"
 
-        # Verify update was called for existing-google-id-1 and existing-google-id-2
-        # Verify event payload bodies exclude non-google fields like uid and synced_event_id
-        body_1 = {k: v for k, v in payloads[0].items() if k not in {"uid", "synced_event_id"}}
-        body_2 = {k: v for k, v in payloads[1].items() if k not in {"uid", "synced_event_id"}}
-        body_3 = {k: v for k, v in payloads[2].items() if k not in {"uid", "synced_event_id"}}
-
-        mock_service.events().update.assert_any_call(
-            calendarId="primary", eventId="existing-google-id-1", body=body_1
-        )
-        mock_service.events().update.assert_any_call(
-            calendarId="primary", eventId="existing-google-id-2", body=body_2
-        )
+        # Verify that update is NOT called because the events matched time, course code, and session number (skipped)
+        mock_service.events().update.assert_not_called()
         # Verify insert was called for new event
+        body_3 = {k: v for k, v in payloads[2].items() if k not in {"uid", "synced_event_id"}}
         mock_service.events().insert.assert_any_call(
             calendarId="primary", body=body_3
         )

@@ -390,8 +390,8 @@ def test_two_legitimate_sessions_same_code_session_both_kept():
 
     # Neither event should be deleted — both are legitimate
     mock_service.events().delete.assert_not_called()
-    # Both should be updated (call_count includes the setup call from side_effect fixture)
-    assert mock_service.events().update.call_count >= 2
+    # Both should be skipped (update not called) because they matched time, code, and session
+    assert mock_service.events().update.call_count == 1  # only mock side_effect setup call
     assert result.event_ids["uid-a"] == "gid-a"
     assert result.event_ids["uid-b"] == "gid-b"
 
@@ -1290,8 +1290,104 @@ def test_sync_deletes_duplicates_on_google_calendar():
     mock_service.events().delete.assert_called_once_with(
         calendarId="cal-id", eventId="g-id-dup"
     )
-    # The original must be updated
-    assert mock_service.events().update.called
+    # The original is matched and skipped under strict skip rule, so update is not called on mock.
+    # (The test setup update mock call count remains 1 from the side_effect setup)
+    assert mock_service.events().update.call_count == 1
     assert result.event_ids["uid-1"] == "g-id-orig"
+
+
+# ═══════════════════════════════════════════════════════════════════════════════
+# 25. Strict Deduplication and Rescheduling logic
+# ═══════════════════════════════════════════════════════════════════════════════
+
+def test_strict_dedup_and_rescheduling():
+    """
+    If existing matches code+session+time -> skip.
+    If existing matches code+session but time mismatches -> delete old, insert new.
+    """
+    from class_sync.google_calendar import GoogleCalendarClient
+
+    # 1. Stale event in Google Calendar (different time: 10:40)
+    existing_stale = {
+        "id": "g-stale-id",
+        "summary": "Financial Innovations & Fintech",
+        "start": {"dateTime": "2026-06-10T10:40:00+05:30"},
+        "extendedProperties": {
+            "private": {
+                "classSyncUid": "uid-old",
+                "courseCode": "FIN521",
+                "sessionNumber": "3",
+            }
+        },
+    }
+
+    # 2. Matching event in Google Calendar (same time: 14:30)
+    existing_matching = {
+        "id": "g-match-id",
+        "summary": "Financial Innovations & Fintech",
+        "start": {"dateTime": "2026-06-10T14:30:00+05:30"},
+        "extendedProperties": {
+            "private": {
+                "classSyncUid": "uid-match",
+                "courseCode": "FIN521",
+                "sessionNumber": "4",
+            }
+        },
+    }
+
+    mock_service = MagicMock()
+    mock_service.calendarList().list().execute.return_value = {
+        "items": [{"id": "cal-id", "summary": "SPJIMR Timetable"}]
+    }
+    # Google Calendar contains both existing events
+    mock_service.events().list().execute.side_effect = [
+        {"items": [existing_stale, existing_matching], "nextPageToken": None}
+    ]
+    mock_service.events().insert().execute.return_value = {"id": "g-new-inserted-id"}
+
+    # Timetable incoming payloads
+    payloads = [
+        {
+            "uid": "uid-new",  # Rescheduled session 3 now at 15:40 instead of 10:40
+            "summary": "Financial Innovations & Fintech",
+            "start": {"dateTime": "2026-06-10T15:40:00"},
+            "end": {"dateTime": "2026-06-10T16:50:00"},
+            "extendedProperties": {"private": {"classSyncUid": "uid-new", "courseCode": "FIN521", "sessionNumber": "3"}},
+        },
+        {
+            "uid": "uid-match", # Matching session 4 remains at 14:30
+            "summary": "Financial Innovations & Fintech",
+            "start": {"dateTime": "2026-06-10T14:30:00"},
+            "end": {"dateTime": "2026-06-10T15:40:00"},
+            "extendedProperties": {"private": {"classSyncUid": "uid-match", "courseCode": "FIN521", "sessionNumber": "4"}},
+        }
+    ]
+
+    with patch("googleapiclient.discovery.build", return_value=mock_service):
+        client = GoogleCalendarClient(credentials={"token": "tok", "refresh_token": "r"})
+        result = client.sync(payloads)
+
+    # 1. Stale event g-stale-id (since start 10:40 is not in incoming times) must be deleted in list loop
+    mock_service.events().delete.assert_any_call(calendarId="cal-id", eventId="g-stale-id")
+    
+    # 2. Matching event must NOT be deleted because start 14:30 is in incoming times
+    with pytest.raises(AssertionError):
+        mock_service.events().delete.assert_any_call(calendarId="cal-id", eventId="g-match-id")
+
+    # 3. Matching event must be skipped (no update or insert API calls made for it)
+    # The only insert call should be for the rescheduled/new slot uid-new (call_count is 2 due to setup mock)
+    assert mock_service.events().insert.call_count == 2
+    # Verify the actual insert call arguments
+    insert_call = mock_service.events().insert.call_args_list[-1]
+    assert insert_call.kwargs["calendarId"] == "cal-id"
+    assert insert_call.kwargs["body"]["extendedProperties"]["private"]["classSyncUid"] == "uid-new"
+    
+    # Update must not be called (since matches skipped and stale deleted)
+    assert mock_service.events().update.call_count == 0
+
+    # 4. Result ids must contain correct mapped IDs
+    assert result.event_ids["uid-new"] == "g-new-inserted-id"
+    assert result.event_ids["uid-match"] == "g-match-id"
+
 
 

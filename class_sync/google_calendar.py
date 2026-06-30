@@ -141,9 +141,21 @@ class GoogleCalendarClient:
         service = build("calendar", "v3", credentials=credentials)
         calendar_id, created = self._ensure_calendar(service)
 
+        # 1. Build a map of expected incoming times for each (courseCode, sessionNumber)
+        incoming_times_by_code_session: dict[tuple[str, str], set[str]] = {}
+        for event in event_payloads:
+            private_props = event.get("extendedProperties", {}).get("private", {})
+            p_code = private_props.get("courseCode", "").strip().upper()
+            p_sess = private_props.get("sessionNumber", "").strip()
+            start_dt = event.get("start", {}).get("dateTime")
+            if p_code and p_sess and start_dt:
+                key = (p_code, p_sess)
+                if key not in incoming_times_by_code_session:
+                    incoming_times_by_code_session[key] = set()
+                incoming_times_by_code_session[key].add(start_dt[:19])
+
         # Retrieve existing calendar events to avoid creating duplicates.
-        # timeMin restricts to events starting from yesterday, cutting API payload significantly
-        # and avoiding matching against long-past sessions.
+        # timeMin restricts to events starting from yesterday, cutting API payload significantly.
         import datetime as _dt
         time_min = (
             _dt.datetime.now(_dt.timezone.utc) - _dt.timedelta(days=1)
@@ -167,34 +179,63 @@ class GoogleCalendarClient:
                     private = item.get("extendedProperties", {}).get("private", {})
                     code = private.get("courseCode", "").strip().upper()
                     sess = private.get("sessionNumber", "").strip()
+
+                    # Fallback: parse code & session from description if private properties are missing
+                    desc = item.get("description", "")
+                    if desc and (not code or not sess):
+                        import re as _re
+                        code_match = _re.search(r"Course Code:\s*(\S+)", desc)
+                        sess_match = _re.search(r"Session No:\s*(\d+)", desc)
+                        if code_match and not code:
+                            code = code_match.group(1).split("-")[0].strip().upper()
+                        if sess_match and not sess:
+                            sess = sess_match.group(1).strip()
+
                     start_dt = item.get("start", {}).get("dateTime")
                     summary = item.get("summary", "")
 
-                    # 1. Check for duplicates by (code, session, start_time) first
-                    is_dup = False
+                    # 2. Strict checks for duplicate and stale/rescheduled events
+                    is_dup_or_stale = False
                     if code and sess and start_dt:
                         norm_start = start_dt[:19]
-                        key = (code, sess, norm_start)
-                        if key in existing_by_code_session_time:
-                            is_dup = True
+                        key = (code, sess)
+                        expected_times = incoming_times_by_code_session.get(key, set())
+                        
+                        # Rescheduled Slot: If the time of the existing event is NOT in the incoming timetable,
+                        # delete it immediately from Google Calendar.
+                        if norm_start not in expected_times:
+                            is_dup_or_stale = True
                             duplicate_id = item["id"]
                             try:
                                 service.events().delete(
                                     calendarId=calendar_id, eventId=duplicate_id
                                 ).execute()
-                                logger.info("Deleted duplicate calendar event %s (code=%s, session=%s, start=%s)", duplicate_id, code, sess, norm_start)
+                                logger.info("Deleted rescheduled calendar event %s (code=%s, session=%s, start=%s)", duplicate_id, code, sess, norm_start)
                             except Exception as e:
-                                logger.warning("Failed to delete duplicate event %s: %s", duplicate_id, e)
+                                logger.warning("Failed to delete rescheduled event %s: %s", duplicate_id, e)
                         else:
-                            existing_by_code_session_time[key] = item["id"]
+                            # If it matches expected time, check for duplicate at the same slot
+                            time_key = (code, sess, norm_start)
+                            if time_key in existing_by_code_session_time:
+                                is_dup_or_stale = True
+                                duplicate_id = item["id"]
+                                try:
+                                    service.events().delete(
+                                        calendarId=calendar_id, eventId=duplicate_id
+                                    ).execute()
+                                    logger.info("Deleted duplicate calendar event %s (code=%s, session=%s, start=%s)", duplicate_id, code, sess, norm_start)
+                                except Exception as e:
+                                    logger.warning("Failed to delete duplicate event %s: %s", duplicate_id, e)
+                            else:
+                                existing_by_code_session_time[time_key] = item["id"]
 
-                    # 2. Check for duplicates by time and title if not already deleted
-                    if not is_dup and start_dt and summary:
+                    # Fallback check for duplicates by time and title if not already handled
+                    if not is_dup_or_stale and start_dt and summary:
                         norm_start = start_dt[:19]
                         norm_title = summary.replace("🔴 MANDATORY: ", "").replace("📝 EVALUATION: ", "").replace("🔴 MANDATORY EVALUATION: ", "").strip()
                         time_title_key = (norm_title, norm_start)
                         if time_title_key in existing_by_time_title:
-                            is_dup = True
+                            is_dup_or_stale = True
                             duplicate_id = item["id"]
                             try:
                                 service.events().delete(
@@ -206,11 +247,11 @@ class GoogleCalendarClient:
                         else:
                             existing_by_time_title[time_title_key] = item["id"]
 
-                    # If it was a duplicate, do not index it
-                    if is_dup:
+                    # Do not index deleted events
+                    if is_dup_or_stale:
                         continue
 
-                    # 3. Index remaining non-duplicate events
+                    # 3. Index remaining active events
                     uid = private.get("classSyncUid")
                     if uid:
                         existing_by_uid[uid] = item["id"]
@@ -223,92 +264,39 @@ class GoogleCalendarClient:
         except Exception as e:
             logger.warning("Failed to list existing calendar events: %s", e)
 
-        # Pre-compute the full set of uids being synced so the stale-event check
-        # can distinguish "this event belongs to a DIFFERENT payload item" (don't
-        # delete it) from "this event is no longer in the timetable at all" (stale).
-        payload_uid_set = {ev["uid"] for ev in event_payloads}
-
-        # Reverse map: google_event_id → classSyncUid, used to identify whose uid
-        # owns a Google Calendar event during stale detection.
-        existing_uid_by_google_id: dict[str, str] = {v: k for k, v in existing_by_uid.items()}
-
         imported = 0
         for event in event_payloads:
             body = {key: value for key, value in event.items() if key not in {"uid", "synced_event_id"}}
             uid = event["uid"]
             google_id = event.get("synced_event_id")
 
-            # --- Determine the normalised code+session key for this payload ---
+            # Determine the normalised code+session key for this payload
             private_props = event.get("extendedProperties", {}).get("private", {})
             payload_code = private_props.get("courseCode", "").strip().upper()
             payload_sess = private_props.get("sessionNumber", "").strip()
-            code_session_key = (payload_code, payload_sess) if (payload_code and payload_sess) else None
+            starts_at_iso = event["start"]["dateTime"][:19]
 
-            # --- Stale-event detection via (courseCode, sessionNumber) ---
-            # A Google Calendar event is "stale" when:
-            #   - It shares the same (code, session) as this incoming payload, AND
-            #   - Its own classSyncUid is NOT in the current payload's uid set
-            #     (meaning TCS no longer returns that event — it was rescheduled/removed).
-            # We do NOT mark it stale if another payload event legitimately owns it
-            # (e.g. two real sessions of the same course at different times).
-            stale_by_code_session: str | None = None
-            if code_session_key and code_session_key in existing_by_code_session:
-                candidate_id = existing_by_code_session[code_session_key]
-                candidate_uid = existing_uid_by_google_id.get(candidate_id)
-                # Only stale if the owning uid is absent from this sync's payload
-                if candidate_uid not in payload_uid_set:
-                    stale_by_code_session = candidate_id
+            # Rule: If the existing event matches course code, session number, and time,
+            # SKIP and do not create or update any event.
+            if payload_code and payload_sess:
+                time_key = (payload_code, payload_sess, starts_at_iso)
+                if time_key in existing_by_code_session_time:
+                    event_ids[uid] = existing_by_code_session_time[time_key]
+                    # Skip completely (no write API call)
+                    continue
 
-            if stale_by_code_session:
-                # Delete the outdated Google Calendar event
-                try:
-                    service.events().delete(
-                        calendarId=calendar_id, eventId=stale_by_code_session
-                    ).execute()
-                    logger.info(
-                        "Deleted stale event %s (code=%s, session=%s)",
-                        stale_by_code_session, payload_code, payload_sess,
-                    )
-                except Exception as del_exc:
-                    logger.warning(
-                        "Could not delete stale event %s: %s", stale_by_code_session, del_exc
-                    )
-                # Remove the deleted event from all indices
-                del existing_by_code_session[code_session_key]
-                existing_by_uid = {k: v for k, v in existing_by_uid.items() if v != stale_by_code_session}
-                existing_uid_by_google_id.pop(stale_by_code_session, None)
-                existing_by_time_title = {
-                    k: v for k, v in existing_by_time_title.items() if v != stale_by_code_session
-                }
-                if code_session_key:
-                    starts_at_iso = event["start"]["dateTime"][:19]
-                    existing_by_code_session_time.pop((payload_code, payload_sess, starts_at_iso), None)
-                # ── KEY FIX ──────────────────────────────────────────────────────
-                # Only clear google_id if it was pointing to the now-deleted stale
-                # event.  If synced_event_id references a DIFFERENT surviving Google
-                # event (the legitimate one for this uid), keep it — we'll UPDATE
-                # rather than INSERT and create a duplicate.
-                if google_id == stale_by_code_session:
-                    google_id = None  # stale event gone; force INSERT below
+            # Fallback duplicate prevention (using title/time)
+            fallback_id = None
+            norm_title = event["summary"].replace("🔴 MANDATORY: ", "").replace("📝 EVALUATION: ", "").replace("🔴 MANDATORY EVALUATION: ", "").strip()
+            if (norm_title, starts_at_iso) in existing_by_time_title:
+                fallback_id = existing_by_time_title[(norm_title, starts_at_iso)]
+            elif uid in existing_by_uid:
+                fallback_id = existing_by_uid[uid]
 
-            # Standard duplicate prevention: UID match → time+title match
-            if not google_id:
-                if uid in existing_by_uid:
-                    google_id = existing_by_uid[uid]
-                else:
-                    starts_at_iso = event["start"]["dateTime"][:19]
-                    
-                    # 1. Match by course code, session number, and time
-                    if code_session_key:
-                        time_key = (payload_code, payload_sess, starts_at_iso)
-                        if time_key in existing_by_code_session_time:
-                            google_id = existing_by_code_session_time[time_key]
-
-                    # 2. Fallback to time + title match
-                    if not google_id:
-                        norm_title = event["summary"].replace("🔴 MANDATORY: ", "").replace("📝 EVALUATION: ", "").replace("🔴 MANDATORY EVALUATION: ", "").strip()
-                        if (norm_title, starts_at_iso) in existing_by_time_title:
-                            google_id = existing_by_time_title[(norm_title, starts_at_iso)]
+            if fallback_id:
+                event_ids[uid] = fallback_id
+                # Skip completely (no write API call)
+                continue
 
             if google_id:
                 try:
