@@ -1067,7 +1067,7 @@ def test_sync_dry_run_empty_payloads_returns_zero():
 # ═══════════════════════════════════════════════════════════════════════════════
 
 def test_sync_passes_time_min_to_events_list():
-    """events().list() must receive a timeMin argument to avoid fetching all history."""
+    """events().list() must receive timeMin and timeMax arguments to avoid fetching unnecessary history/future events."""
     from class_sync.google_calendar import GoogleCalendarClient
 
     mock_service = MagicMock()
@@ -1093,14 +1093,18 @@ def test_sync_passes_time_min_to_events_list():
         client = GoogleCalendarClient(credentials={"token": "tok", "refresh_token": "r"})
         client.sync(payloads)
 
-    # Verify that the list() call received timeMin
+    # Verify that the list() call received timeMin and timeMax
     list_call_kwargs = mock_service.events().list.call_args
     assert list_call_kwargs is not None
     kwargs = list_call_kwargs.kwargs if hasattr(list_call_kwargs, "kwargs") else list_call_kwargs[1]
     assert "timeMin" in kwargs, "timeMin must be passed to events().list() for performance"
-    # timeMin must be a valid UTC timestamp string
+    assert "timeMax" in kwargs, "timeMax must be passed to events().list() for performance"
+    
+    # Check formats
     time_min_val = kwargs["timeMin"]
     assert "Z" in time_min_val or "T" in time_min_val, f"timeMin looks malformed: {time_min_val}"
+    time_max_val = kwargs["timeMax"]
+    assert "Z" in time_max_val or "T" in time_max_val, f"timeMax looks malformed: {time_max_val}"
 
 
 # ═══════════════════════════════════════════════════════════════════════════════

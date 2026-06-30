@@ -156,10 +156,11 @@ class GoogleCalendarClient:
 
         # Retrieve existing calendar events to avoid creating duplicates.
         # timeMin restricts to events starting from yesterday, cutting API payload significantly.
+        # timeMax restricts to the next 2 weeks (14-day sync window + 1-day buffer).
         import datetime as _dt
-        time_min = (
-            _dt.datetime.now(_dt.timezone.utc) - _dt.timedelta(days=1)
-        ).strftime("%Y-%m-%dT%H:%M:%SZ")
+        now_utc = _dt.datetime.now(_dt.timezone.utc)
+        time_min = (now_utc - _dt.timedelta(days=1)).strftime("%Y-%m-%dT%H:%M:%SZ")
+        time_max = (now_utc + _dt.timedelta(days=15)).strftime("%Y-%m-%dT%H:%M:%SZ")
 
         existing_by_uid = {}
         existing_by_time_title = {}
@@ -174,6 +175,7 @@ class GoogleCalendarClient:
                     singleEvents=True,
                     maxResults=250,
                     timeMin=time_min,
+                    timeMax=time_max,
                 ).execute()
                 for item in events_result.get("items", []):
                     private = item.get("extendedProperties", {}).get("private", {})
