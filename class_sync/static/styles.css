@@ -961,4 +961,163 @@ code {
   color: var(--text-muted);
 }
 
+/* ============================================================
+   Class Sync — Premium Light Theme Overrides
+   ============================================================ */
 
+html[data-theme="light"] {
+  --bg:          #f8fafc;
+  --surface-1:   #ffffff;
+  --surface-2:   #f1f5f9;
+  --surface-3:   #e2e8f0;
+  --surface-4:   #cbd5e1;
+  --border:      rgba(15, 23, 42, 0.08);
+  --border-md:   rgba(15, 23, 42, 0.14);
+  --border-act:  rgba(14, 116, 144, 0.35);
+  --text:        #0f172a;
+  --text-dim:    #475569;
+  --text-muted:  #64748b;
+  --accent:      #0891b2;
+  --accent-2:    #2563eb;
+  --accent-3:    #7c3aed;
+  --accent-glow: rgba(8, 145, 178, 0.08);
+  --success:     #059669;
+  --success-bg:  rgba(5, 150, 105, 0.06);
+  --error:       #dc2626;
+  --error-bg:    rgba(220, 38, 38, 0.06);
+  --warning:     #d97706;
+  --warning-bg:  rgba(217, 119, 6, 0.06);
+  --info:        #2563eb;
+  --info-bg:     rgba(37, 99, 235, 0.06);
+  --sh:          0 4px 20px rgba(15, 23, 42, 0.05);
+  --sh-lg:       0 12px 36px rgba(15, 23, 42, 0.08);
+}
+
+html[data-theme="light"] body::before {
+  background-image:
+    linear-gradient(rgba(8, 145, 178, .015) 1px, transparent 1px),
+    linear-gradient(90deg, rgba(8, 145, 178, .015) 1px, transparent 1px);
+}
+
+html[data-theme="light"] body::after {
+  background: radial-gradient(ellipse, rgba(8, 145, 178, .03) 0%, transparent 68%);
+}
+
+/* ── Light Mode Specific Contrast Overrides ────────────────── */
+
+html[data-theme="light"] .badge.ok {
+  color: #047857;
+}
+
+html[data-theme="light"] .step.done .step-num {
+  background: rgba(5, 150, 105, 0.1);
+  border-color: rgba(5, 150, 105, 0.4);
+  color: #047857;
+}
+
+html[data-theme="light"] .step.done .step-label {
+  color: #047857;
+}
+
+html[data-theme="light"] .toast.success {
+  background: rgba(5, 150, 105, 0.08);
+  border-color: rgba(5, 150, 105, 0.2);
+  color: #047857;
+}
+
+html[data-theme="light"] .toast.error {
+  background: rgba(220, 38, 38, 0.08);
+  border-color: rgba(220, 38, 38, 0.2);
+  color: #b91c1c;
+}
+
+html[data-theme="light"] .toast.info {
+  background: rgba(37, 99, 235, 0.08);
+  border-color: rgba(37, 99, 235, 0.2);
+  color: #1d4ed8;
+}
+
+html[data-theme="light"] .toast.warning {
+  background: rgba(217, 119, 6, 0.08);
+  border-color: rgba(217, 119, 6, 0.2);
+  color: #b45309;
+}
+
+html[data-theme="light"] .btn-primary {
+  color: #ffffff;
+  box-shadow: 0 4px 14px rgba(37, 99, 235, 0.2);
+}
+
+html[data-theme="light"] .btn-primary:hover {
+  box-shadow: 0 6px 20px rgba(37, 99, 235, 0.35);
+}
+
+html[data-theme="light"] .btn-google {
+  color: #ffffff;
+}
+
+html[data-theme="light"] .btn-danger {
+  background: var(--error);
+  color: #ffffff;
+  border-color: var(--error);
+}
+
+html[data-theme="light"] .btn-danger:hover {
+  background: #b91c1c;
+}
+
+html[data-theme="light"] .mandatory-card {
+  border-color: rgba(220, 38, 38, 0.25);
+  background: rgba(220, 38, 38, 0.02);
+}
+
+html[data-theme="light"] .mandatory-pill {
+  color: #b91c1c;
+  background: rgba(220, 38, 38, 0.08);
+}
+
+html[data-theme="light"] .empty-repo-text {
+  color: #64748b;
+}
+
+html[data-theme="light"] .brand-sub {
+  color: #64748b;
+}
+
+html[data-theme="light"] .card {
+  box-shadow: 0 4px 20px rgba(15, 23, 42, 0.04);
+}
+
+html[data-theme="light"] .step-num {
+  box-shadow: 0 0 10px rgba(15, 23, 42, 0.02);
+}
+
+/* ── Theme Toggle Button Styling ───────────────────────────── */
+
+.theme-toggle-btn {
+  display: inline-flex; align-items: center; justify-content: center;
+  width: 34px; height: 34px;
+  border-radius: 50%;
+  border: 1px solid var(--border);
+  color: var(--text-dim);
+  background: var(--surface-1);
+  cursor: pointer;
+  transition: var(--ease);
+  padding: 0;
+  outline: none;
+}
+
+.theme-toggle-btn:hover {
+  border-color: var(--border-md);
+  color: var(--text);
+  background: var(--surface-2);
+  transform: scale(1.05);
+}
+
+.theme-toggle-btn:active {
+  transform: scale(0.95);
+}
+
+.theme-toggle-btn svg {
+  display: block;
+}
