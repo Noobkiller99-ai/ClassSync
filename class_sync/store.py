@@ -168,22 +168,6 @@ def delete_setting(path: str | Path, user_token: str, key: str) -> None:
         )
 
 
-def get_all_users_with_credentials(path: str | Path) -> list[str]:
-    """Return user_tokens that have both TCS and Google credentials saved."""
-    with connect(path) as conn:
-        rows = _execute(
-            conn,
-            """
-            SELECT user_token
-            FROM settings
-            WHERE key IN ('tcs_credentials_encrypted', 'google_credentials')
-            GROUP BY user_token
-            HAVING COUNT(DISTINCT key) = 2
-            """,
-        ).fetchall() # type: ignore[attr-defined]
-    return [row[0] for row in rows]
-
-
 # ── Events ─────────────────────────────────────────────────────────────────────
 
 def clear_events(path: str | Path, user_token: str) -> None:

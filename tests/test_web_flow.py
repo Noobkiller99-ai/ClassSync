@@ -316,12 +316,12 @@ def test_batch_bifurcation_on_upload(tmp_path):
     )
 
     # Set up user 1 (pgp25)
-    set_setting(db, user1_tok, "tcs_credentials_encrypted", encrypt_json({"username": "pgp25.student1@spjimr.org", "password": "abc"}))
+    set_setting(db, user1_tok, "batch", "pgp25")
     set_setting(db, user1_tok, "preview_events", serialize_events([ev1]))
     save_events(db, user1_tok, [ev1])
 
     # Set up user 2 (pgp26)
-    set_setting(db, user2_tok, "tcs_credentials_encrypted", encrypt_json({"username": "pgp26.student2@spjimr.org", "password": "xyz"}))
+    set_setting(db, user2_tok, "batch", "pgp26")
     set_setting(db, user2_tok, "preview_events", serialize_events([ev2]))
     save_events(db, user2_tok, [ev2])
 

@@ -19,18 +19,16 @@ except ImportError:
 # NOTE: For local HTTP development set OAUTHLIB_INSECURE_TRANSPORT=1 in .env
 # Do NOT set it here — on Render the app runs over HTTPS via ProxyFix.
 
-from flask import Flask, flash, redirect, render_template, request, session, url_for
+from flask import Flask, flash, redirect, render_template, request, session, url_for, has_request_context
 from werkzeug.middleware.proxy_fix import ProxyFix
 
 from .google_calendar import GoogleCalendarClient
-from .scheduler import WeeklyScheduler
 from .security import decrypt_json, encrypt_json
 from .store import (
     clear_events,
     clear_mandatory_sessions,
     database_path,
     delete_setting,
-    get_all_users_with_credentials,
     get_all_user_tokens,
     get_mandatory_sessions,
     get_setting,
@@ -96,7 +94,7 @@ def create_app(test_config: dict | None = None) -> Flask:
         db = app.config["DATABASE"]
         events_raw: list[dict] = get_setting(db, tok, "preview_events", [])  # type: ignore[assignment]
         google_ready = bool(get_setting(db, tok, "google_credentials", None))
-        tcs_ready = bool(get_setting(db, tok, "tcs_credentials_encrypted", None))
+        tcs_ready = bool(session.get("tcs_credentials_encrypted"))
         batch = _get_user_batch(app, tok)
         mandatory_data = get_mandatory_sessions(db, batch)
         synced = bool(
@@ -154,7 +152,9 @@ def create_app(test_config: dict | None = None) -> Flask:
             flash(str(exc), "error")
             return redirect(url_for("index"))
         db = app.config["DATABASE"]
-        set_setting(db, tok, "tcs_credentials_encrypted", encrypt_json(credentials))
+        session["tcs_credentials_encrypted"] = encrypt_json(credentials)
+        batch = _extract_batch_from_email(username)
+        set_setting(db, tok, "batch", batch)
         set_setting(db, tok, "preview_events", serialize_events(events))
         save_events(db, tok, events)
         flash(
@@ -167,7 +167,8 @@ def create_app(test_config: dict | None = None) -> Flask:
     def tcs_reset():
         tok = _user_token()
         db = app.config["DATABASE"]
-        delete_setting(db, tok, "tcs_credentials_encrypted")
+        session.pop("tcs_credentials_encrypted", None)
+        delete_setting(db, tok, "batch")
         delete_setting(db, tok, "preview_events")
         delete_setting(db, tok, "google_credentials")
         clear_events(db, tok)
@@ -352,40 +353,6 @@ def create_app(test_config: dict | None = None) -> Flask:
         )
         return redirect(url_for("index"))
 
-    # ── Weekly background refresh ─────────────────────────────────────────────
-
-
-    def weekly_job() -> None:
-        """Refresh timetable and re-sync calendar for all fully-configured users."""
-        with app.app_context():
-            db = app.config["DATABASE"]
-            for tok in get_all_users_with_credentials(db):
-                try:
-                    credentials = _stored_tcs_credentials(app, tok)
-                    if not credentials:
-                        continue
-                    events = _fetch_timetable(app, credentials, tok)
-                    set_setting(db, tok, "preview_events", serialize_events(events))
-                    save_events(db, tok, events)
-                    _sync_calendar(app, tok)
-                except Exception:
-                    pass  # Don't let one user's failure block others
-
-    if IS_LOCAL and not app.config["TESTING"]:
-        WeeklyScheduler(weekly_job).start()
-
-    @app.route("/api/cron", methods=["GET", "POST"])
-    def vercel_cron():
-        cron_secret = os.getenv("CRON_SECRET")
-        auth_header = request.headers.get("Authorization")
-        if cron_secret and auth_header != f"Bearer {cron_secret}":
-            logger.warning("Cron request unauthorized")
-            return "Unauthorized", 401
-        logger.info("Starting Vercel cron weekly refresh job")
-        weekly_job()
-        logger.info("Vercel cron weekly refresh job completed successfully")
-        return "Cron refresh complete", 200
-
     @app.get("/privacy")
     def privacy():
         return render_template("privacy.html")
@@ -436,11 +403,13 @@ def _sync_calendar(app: Flask, user_token: str):
     return result
 
 
-def _stored_tcs_credentials(app: Flask, user_token: str) -> dict | None:
-    encrypted = get_setting(
-        app.config["DATABASE"], user_token, "tcs_credentials_encrypted", None
-    )
-    return decrypt_json(encrypted)  # type: ignore[arg-type]
+def _stored_tcs_credentials(app: Flask, user_token: str | None = None) -> dict | None:
+    if not has_request_context():
+        return None
+    if user_token and user_token != session.get("user_token"):
+        return None
+    encrypted = session.get("tcs_credentials_encrypted")
+    return decrypt_json(encrypted) if encrypted else None
 
 
 def _sync_window_now(app: Flask) -> datetime | None:
@@ -584,6 +553,10 @@ def _extract_batch_from_email(email: str) -> str:
 
 
 def _get_user_batch(app: Flask, user_token: str) -> str:
+    db = app.config["DATABASE"]
+    batch = get_setting(db, user_token, "batch", None)
+    if batch:
+        return str(batch)
     creds = _stored_tcs_credentials(app, user_token)
     if creds:
         return _extract_batch_from_email(creds.get("username", ""))
