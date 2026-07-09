@@ -19,6 +19,10 @@
   <div id="loadingOverlay">
     <div class="spinner"></div>
     <p class="spinner-text" id="spinnerText">Please wait…</p>
+    <div class="quote-container">
+      <p class="quote-text" id="quoteText"></p>
+      <p class="quote-author" id="quoteAuthor"></p>
+    </div>
   </div>
 
   <!-- ── Toast messages ────────────────────────────────────── -->
@@ -494,8 +498,35 @@
       btn.setAttribute('aria-label', show ? 'Hide password' : 'Show password');
     }
 
+    var quotes = [
+      { text: "Time is the wisest counselor of all.", author: "Pericles" },
+      { text: "The way to get started is to quit talking and begin doing.", author: "Walt Disney" },
+      { text: "It is not that we have a short time to live, but that we waste a lot of it.", author: "Seneca" },
+      { text: "Your time is limited, so don't waste it living someone else's life.", author: "Steve Jobs" },
+      { text: "The key is not to prioritize what's on your schedule, but to schedule your priorities.", author: "Stephen Covey" },
+      { text: "Time is what we want most, but what we use worst.", author: "William Penn" },
+      { text: "Yesterday is gone. Tomorrow has not yet come. We have only today. Let us begin.", author: "Mother Teresa" },
+      { text: "The bad news is time flies. The good news is you're the pilot.", author: "Michael Altshuler" },
+      { text: "A year from now you may wish you had started today.", author: "Karen Lamb" },
+      { text: "Time is a created thing. To say 'I don't have time' is like saying, 'I don't want to.'", author: "Lao Tzu" },
+      { text: "Productivity is never an accident. It is always the result of a commitment to excellence, intelligent planning, and focused effort.", author: "Paul J. Meyer" },
+      { text: "Plan for what is difficult while it is easy, do what is great while it is small.", author: "Sun Tzu" }
+    ];
+
+    function showRandomQuote() {
+      var idx = Math.floor(Math.random() * quotes.length);
+      var q = quotes[idx];
+      var qText = document.getElementById('quoteText');
+      var qAuthor = document.getElementById('quoteAuthor');
+      if (qText && qAuthor) {
+        qText.textContent = `“${q.text}”`;
+        qAuthor.textContent = `— ${q.author}`;
+      }
+    }
+
     /* ── Loading overlay ───────────────────────────────────── */
     function startLoading(form, msg) {
+      showRandomQuote();
       var overlay = document.getElementById('loadingOverlay');
       document.getElementById('spinnerText').textContent = msg || 'Please wait…';
       overlay.classList.add('on');

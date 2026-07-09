@@ -213,6 +213,35 @@ body::after {
 @keyframes spin { to { transform: rotate(360deg); } }
 .spinner-text { font-size: 15px; font-weight: 500; color: var(--text-dim); }
 
+.quote-container {
+  max-width: 480px;
+  text-align: center;
+  margin-top: 30px;
+  padding: 20px 24px;
+  background: rgba(255, 255, 255, 0.02);
+  border: 1px solid rgba(255, 255, 255, 0.04);
+  border-radius: var(--r);
+  animation: fadeIn 0.5s ease-out;
+}
+.quote-text {
+  font-size: 14px;
+  font-style: italic;
+  color: var(--text);
+  line-height: 1.65;
+  margin-bottom: 8px;
+}
+.quote-author {
+  font-size: 11px;
+  font-weight: 700;
+  color: var(--accent);
+  text-transform: uppercase;
+  letter-spacing: 1.5px;
+}
+@keyframes fadeIn {
+  from { opacity: 0; transform: translateY(10px); }
+  to { opacity: 1; transform: translateY(0); }
+}
+
 /* ── Card ──────────────────────────────────────────────────── */
 .card {
   background: var(--surface-1);
@@ -1091,6 +1120,21 @@ html[data-theme="light"] .card {
 html[data-theme="light"] .step-num {
   box-shadow: 0 0 10px rgba(15, 23, 42, 0.02);
 }
+
+html[data-theme="light"] #loadingOverlay {
+  background: rgba(248, 250, 252, 0.85);
+}
+
+html[data-theme="light"] .spinner {
+  border-color: rgba(8, 145, 178, 0.2);
+  border-top-color: var(--accent);
+}
+
+html[data-theme="light"] .quote-container {
+  background: rgba(15, 23, 42, 0.03);
+  border-color: rgba(15, 23, 42, 0.05);
+}
+
 
 /* ── Theme Toggle Button Styling ───────────────────────────── */
 
