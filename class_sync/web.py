@@ -86,6 +86,11 @@ def create_app(test_config: dict | None = None) -> Flask:
         from flask import jsonify
         return jsonify({"status": "ok"})
 
+    @app.get("/google8cee1b0974b32ae6.html")
+    def google_verification():
+        return "google-site-verification: google8cee1b0974b32ae6.html"
+
+
     # ── Routes ────────────────────────────────────────────────────────────────
 
     @app.get("/")
