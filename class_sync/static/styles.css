@@ -253,7 +253,7 @@ body::after {
   font-size: 42px; font-weight: 900;
   line-height: 1.1; letter-spacing: -1.5px;
   margin-bottom: 18px;
-  background: linear-gradient(140deg, #f1f5f9 30%, #64748b 100%);
+  background: linear-gradient(140deg, var(--text) 30%, var(--text-dim) 100%);
   -webkit-background-clip: text; -webkit-text-fill-color: transparent;
   background-clip: text;
 }
