@@ -1442,5 +1442,56 @@ def test_web_upload_merges_mandatory_sessions(tmp_path):
     assert sessions["FIN561"] == [1, 2, 3, 4]
 
 
+def test_reapply_mandatory_flags_to_batch(tmp_path):
+    from class_sync.store import get_setting, set_setting, reapply_mandatory_flags_to_batch
+    from class_sync.models import TimetableEvent
+    
+    app = make_app(tmp_path)
+    db = app.config["DATABASE"]
+    user_token = "user-batch-tok"
+    
+    # Save a user batch setting
+    set_setting(db, user_token, "batch", "general")
+    
+    # Create test events
+    events = [
+        TimetableEvent(
+            uid="uid-ev1",
+            subject_name="Quantitative Finance",
+            course_code="FIN561-PDM",
+            faculty="Prof. Ameya",
+            classroom="NCR5",
+            starts_at=datetime(2026, 6, 12, 10, 40),
+            ends_at=datetime(2026, 6, 12, 11, 50),
+            session_number="3"
+        ),
+        TimetableEvent(
+            uid="uid-ev2",
+            subject_name="Quantitative Finance",
+            course_code="FIN561-PDM",
+            faculty="Prof. Ameya",
+            classroom="NCR5",
+            starts_at=datetime(2026, 6, 15, 10, 40),
+            ends_at=datetime(2026, 6, 15, 11, 50),
+            session_number="10"
+        ),
+    ]
+    
+    from class_sync.tcs import serialize_events
+    set_setting(db, user_token, "preview_events", serialize_events(events))
+    
+    # Run the bulk reapply logic
+    mandatory_data = {"FIN561": [1, 2, 3, 4]}
+    reapply_mandatory_flags_to_batch(db, "general", mandatory_data)
+    
+    # Verify the results in settings
+    updated = get_setting(db, user_token, "preview_events")
+    assert len(updated) == 2
+    assert updated[0]["mandatory"] is True
+    assert "🔴 MANDATORY:" in updated[0]["title"]
+    assert updated[1]["mandatory"] is False
+
+
+
 
 

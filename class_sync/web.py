@@ -237,10 +237,8 @@ def create_app(test_config: dict | None = None) -> Flask:
                 
         if success_count > 0:
             mandatory_data = get_mandatory_sessions(db, batch)
-            for user_tok in get_all_user_tokens(db):
-                # Only reapply mandatory flags to users in the same batch
-                if _get_user_batch(app, user_tok) == batch:
-                    _reapply_mandatory_flags(app, user_tok, mandatory_data)
+            from .store import reapply_mandatory_flags_to_batch
+            reapply_mandatory_flags_to_batch(db, batch, mandatory_data)
             flash(
                 f"Successfully processed {success_count} course outline(s)! "
                 f"Mandatory sessions are now marked in red.",
@@ -457,66 +455,6 @@ def _group_events(events: list[dict]) -> list[dict]:
             }
         )
     return groups
-
-
-
-
-
-
-def _reapply_mandatory_flags(
-    app: Flask,
-    user_token: str,
-    mandatory_data: dict[str, list[int]],
-) -> None:
-    """Re-flag any stored timetable events as mandatory and re-save."""
-    db = app.config["DATABASE"]
-    events_raw: list[dict] = get_setting(db, user_token, "preview_events", [])  # type: ignore
-    if not events_raw:
-        return
-    # We need to deserialise, re-apply flags, re-serialise
-    from .models import TimetableEvent
-    from datetime import datetime as _DT
-    updated: list[dict] = []
-    updated_events: list[TimetableEvent] = []
-    for e in events_raw:
-        code = (e.get("course_code") or "").split("-")[0].strip().upper()
-        sess = e.get("session_number", "")
-        is_mandatory = False
-        if code in mandatory_data and sess:
-            try:
-                is_mandatory = int(sess) in mandatory_data[code]
-            except ValueError:
-                pass
-        # Update the dict fields directly (payloads are dicts, not dataclasses)
-        e_updated = dict(e)
-        e_updated["mandatory"] = is_mandatory
-        subject = e.get("title", "").replace("🔴 MANDATORY: ", "")
-        if is_mandatory:
-            e_updated["title"] = f"🔴 MANDATORY: {subject}"
-        else:
-            e_updated["title"] = subject
-        updated.append(e_updated)
-
-        # Reconstruct TimetableEvent for database payload persistence
-        starts_at = _DT.fromisoformat(e["starts_at"])
-        ends_at = _DT.fromisoformat(e["ends_at"])
-        updated_events.append(
-            TimetableEvent(
-                uid=e["uid"],
-                subject_name=subject,
-                course_code=e.get("course_code", ""),
-                faculty=e.get("faculty", ""),
-                classroom=e.get("classroom", ""),
-                starts_at=starts_at,
-                ends_at=ends_at,
-                status=e.get("status", ""),
-                mandatory=is_mandatory,
-                session_number=sess,
-                activity_name=e.get("activity_name", ""),
-            )
-        )
-    set_setting(db, user_token, "preview_events", updated)
-    save_events(db, user_token, updated_events)
 
 
 def _extract_course_code(filename: str, pdf_bytes: bytes) -> str | None:

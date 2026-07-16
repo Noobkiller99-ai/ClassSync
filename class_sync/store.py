@@ -267,3 +267,108 @@ def get_all_user_tokens(path: str | Path) -> list[str]:
         rows = _execute(conn, "SELECT DISTINCT user_token FROM settings").fetchall() # type: ignore[attr-defined]
     return [row[0] for row in rows]
 
+
+def reapply_mandatory_flags_to_batch(
+    path: str | Path,
+    batch: str,
+    mandatory_data: dict[str, list[int]],
+) -> None:
+    """Re-flag stored timetable events as mandatory for all users in the batch and save in bulk."""
+    from datetime import datetime as _DT
+    
+    now = datetime.now(UTC).isoformat()
+    
+    with connect(path) as conn:
+        # Find all user tokens in the batch
+        batch_serialized = json.dumps(batch)
+        rows = _execute(
+            conn,
+            "SELECT user_token FROM settings WHERE key = 'batch' AND value = ?",
+            (batch_serialized,),
+        ).fetchall() # type: ignore[attr-defined]
+        user_tokens = [r["user_token"] for r in rows]
+        
+        if batch == "general":
+            all_tokens_rows = _execute(conn, "SELECT DISTINCT user_token FROM settings").fetchall() # type: ignore[attr-defined]
+            all_tokens = {r["user_token"] for r in all_tokens_rows}
+            has_batch_rows = _execute(conn, "SELECT user_token FROM settings WHERE key = 'batch'").fetchall() # type: ignore[attr-defined]
+            has_batch_tokens = {r["user_token"] for r in has_batch_rows}
+            user_tokens.extend(list(all_tokens - has_batch_tokens))
+            user_tokens = list(set(user_tokens))
+            
+        for user_token in user_tokens:
+            row = _execute(
+                conn,
+                "SELECT value FROM settings WHERE user_token = ? AND key = 'preview_events'",
+                (user_token,),
+            ).fetchone() # type: ignore[attr-defined]
+            if not row:
+                continue
+                
+            try:
+                events_raw = json.loads(row["value"])
+            except Exception:
+                continue
+            if not events_raw:
+                continue
+                
+            updated: list[dict] = []
+            timetable_events_list: list[tuple] = []
+            
+            for e in events_raw:
+                code = (e.get("course_code") or "").split("-")[0].strip().upper()
+                sess = e.get("session_number", "")
+                is_mandatory = False
+                if code in mandatory_data and sess:
+                    try:
+                        is_mandatory = int(sess) in mandatory_data[code]
+                    except ValueError:
+                        pass
+                        
+                e_updated = dict(e)
+                e_updated["mandatory"] = is_mandatory
+                subject = e.get("title", "").replace("🔴 MANDATORY: ", "")
+                if is_mandatory:
+                    e_updated["title"] = f"🔴 MANDATORY: {subject}"
+                else:
+                    e_updated["title"] = subject
+                updated.append(e_updated)
+                
+                starts_at = _DT.fromisoformat(e["starts_at"])
+                ends_at = _DT.fromisoformat(e["ends_at"])
+                
+                ev_obj = TimetableEvent(
+                    uid=e["uid"],
+                    subject_name=subject,
+                    course_code=e.get("course_code", ""),
+                    faculty=e.get("faculty", ""),
+                    classroom=e.get("classroom", ""),
+                    starts_at=starts_at,
+                    ends_at=ends_at,
+                    status=e.get("status", ""),
+                    mandatory=is_mandatory,
+                    session_number=sess,
+                    activity_name=e.get("activity_name", ""),
+                )
+                timetable_events_list.append(
+                    (user_token, e["uid"], json.dumps(ev_obj.google_payload()), now)
+                )
+                
+            # Write updated settings
+            _execute(
+                conn,
+                "INSERT INTO settings(user_token, key, value) VALUES(?, 'preview_events', ?) "
+                "ON CONFLICT(user_token, key) DO UPDATE SET value = excluded.value",
+                (user_token, json.dumps(updated)),
+            )
+            
+            # Write updated timetable_events
+            if timetable_events_list:
+                _executemany(
+                    conn,
+                    "INSERT INTO timetable_events(user_token, uid, payload, updated_at) VALUES(?, ?, ?, ?) "
+                    "ON CONFLICT(user_token, uid) DO UPDATE SET payload = excluded.payload, updated_at = excluded.updated_at",
+                    timetable_events_list,
+                )
+
+
