@@ -216,16 +216,18 @@ def create_app(test_config: dict | None = None) -> Flask:
                     continue
                 
                 session_info = parse_mandatory_sessions_from_pdf(pdf_bytes, course_code)
-                if session_info and session_info.mandatory_sessions:
-                    # Save to DB centrally for this batch
+                if session_info:
                     current_sessions = get_mandatory_sessions(db, batch)
-                    current_sessions[course_code] = session_info.mandatory_sessions
-                    save_mandatory_sessions(db, batch, current_sessions)
-                    success_count += 1
-                else:
-                    # Even if no mandatory sessions are found, save an empty list centrally for this batch
-                    current_sessions = get_mandatory_sessions(db, batch)
-                    current_sessions[course_code] = []
+                    existing = current_sessions.get(course_code, [])
+                    if not getattr(session_info, "all_sessions", None):
+                        merged = session_info.mandatory_sessions
+                    else:
+                        covered_set = set(session_info.all_sessions)
+                        mandatory_set = set(session_info.mandatory_sessions)
+                        keep_existing = [s for s in existing if s not in covered_set]
+                        merged = sorted(list(set(keep_existing + list(mandatory_set))))
+                    
+                    current_sessions[course_code] = merged
                     save_mandatory_sessions(db, batch, current_sessions)
                     success_count += 1
                     

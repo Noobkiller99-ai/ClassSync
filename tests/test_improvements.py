@@ -1394,4 +1394,53 @@ def test_strict_dedup_and_rescheduling():
     assert result.event_ids["uid-match"] == "g-match-id"
 
 
+def test_wisenet_parser_extracts_all_sessions():
+    from class_sync.wisenet import parse_mandatory_sessions_from_pdf
+    pdf_path = ROOT / "QF - Course outline for sessions 9 to 18 - Batch 25-27.pdf"
+    with open(pdf_path, "rb") as f:
+        pdf_bytes = f.read()
+    
+    res = parse_mandatory_sessions_from_pdf(pdf_bytes, "FIN561")
+    assert res.course_code == "FIN561"
+    assert res.mandatory_sessions == []
+    assert res.all_sessions == [9, 10, 11, 12, 13, 14, 15, 16, 17, 18]
+
+
+def test_web_upload_merges_mandatory_sessions(tmp_path):
+    from class_sync.store import get_mandatory_sessions, save_mandatory_sessions
+    app = make_app(tmp_path)
+    client = app.test_client()
+    _login(client)
+    
+    with client.session_transaction() as sess:
+        tok = sess.get("user_token")
+    
+    db = app.config["DATABASE"]
+    # Seed initial mandatory sessions in DB
+    save_mandatory_sessions(db, "general", {"FIN561": [1, 2, 3, 4]})
+    
+    pdf_path = ROOT / "QF - Course outline for sessions 9 to 18 - Batch 25-27.pdf"
+    with open(pdf_path, "rb") as f:
+        pdf_bytes = f.read()
+        
+    data = {
+        "pdf_files": (io.BytesIO(pdf_bytes), "QF - Course outline for sessions 9 to 18 - Batch 25-27.pdf")
+    }
+    
+    res = client.post(
+        "/wisenet/upload",
+        data=data,
+        content_type="multipart/form-data",
+        follow_redirects=True
+    )
+    assert res.status_code == 200
+    assert b"Successfully processed 1" in res.data
+    
+    # Check that database contains the merged list
+    sessions = get_mandatory_sessions(db, "general")
+    assert "FIN561" in sessions
+    assert sessions["FIN561"] == [1, 2, 3, 4]
+
+
+
 

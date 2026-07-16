@@ -6,7 +6,7 @@ from __future__ import annotations
 import io
 import logging
 import re
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 
 logger = logging.getLogger(__name__)
 
@@ -15,6 +15,7 @@ class MandatorySessionInfo:
     course_code: str
     course_shortname: str
     mandatory_sessions: list[int]  # list of session numbers (ints)
+    all_sessions: list[int] = field(default_factory=list)
 
 
 def parse_mandatory_sessions_from_pdf(pdf_bytes: bytes, course_shortname: str) -> MandatorySessionInfo:
@@ -42,6 +43,7 @@ def parse_mandatory_sessions_from_pdf(pdf_bytes: bytes, course_shortname: str) -
 
     course_code = course_shortname.split("-")[0].strip().upper()
     mandatory: list[int] = []
+    all_sessions_found: list[int] = []
 
     # Global column config discovered from header row
     mandatory_col_idx: int | None = None
@@ -54,6 +56,11 @@ def parse_mandatory_sessions_from_pdf(pdf_bytes: bytes, course_shortname: str) -
             for table in tables:
                 if not table or len(table) < 2:
                     continue
+
+                # Reset in_session_table if this table is clearly a non-session table
+                first_row_text = " ".join(str(c).lower() for c in table[0] if c)
+                if any(kw in first_row_text for kw in ["competency", "evaluation code", "sdg", "ers content", "faculty contact"]):
+                    in_session_table = False
 
                 # ── Step 1: look for the header row in this table ──────────
                 local_mandatory_col = mandatory_col_idx
@@ -145,15 +152,17 @@ def parse_mandatory_sessions_from_pdf(pdf_bytes: bytes, course_shortname: str) -
                     # Skip rows with no session number
                     if not re.search(r"\d", session_cell):
                         continue
+                    
+                    # Parse session numbers from the session cell
+                    session_nums = _parse_session_nums(session_cell)
+                    all_sessions_found.extend(session_nums)
+
                     # Skip rows with no mandatory indicator
                     if not mandatory_cell or mandatory_cell in {"-", "no", "n/a", "na"}:
                         continue
                     # Skip rows where mandatory cell has no "yes" or "*"
                     if "yes" not in mandatory_cell and "*" not in mandatory_cell:
                         continue
-
-                    # Parse session numbers from the session cell
-                    session_nums = _parse_session_nums(session_cell)
 
                     # Determine which sessions are mandatory
                     if mandatory_cell == "yes" or mandatory_cell == "*":
@@ -169,10 +178,12 @@ def parse_mandatory_sessions_from_pdf(pdf_bytes: bytes, course_shortname: str) -
 
     # Deduplicate and sort
     mandatory = sorted(set(mandatory))
+    all_sessions_found = sorted(set(all_sessions_found))
     return MandatorySessionInfo(
         course_code=course_code,
         course_shortname=course_shortname,
         mandatory_sessions=mandatory,
+        all_sessions=all_sessions_found,
     )
 
 
