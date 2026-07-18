@@ -573,7 +573,30 @@
         }
         var form = document.getElementById('pdfUploadForm');
         startLoading(form, 'Parsing Course Outline PDFs…');
-        form.submit();
+        
+        var formData = new FormData(form);
+        var xhr = new XMLHttpRequest();
+        xhr.open('POST', form.action, true);
+        
+        var redirected = false;
+        function redirectBack() {
+          if (!redirected) {
+            redirected = true;
+            window.location.href = '/';
+          }
+        }
+        
+        xhr.onload = function() {
+          redirectBack();
+        };
+        xhr.onerror = function() {
+          redirectBack();
+        };
+        
+        // Timeout: after 8 seconds, force redirect back to logged in page
+        setTimeout(redirectBack, 8000);
+        
+        xhr.send(formData);
       }
     }
 

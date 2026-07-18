@@ -296,79 +296,100 @@ def reapply_mandatory_flags_to_batch(
             user_tokens.extend(list(all_tokens - has_batch_tokens))
             user_tokens = list(set(user_tokens))
             
-        for user_token in user_tokens:
-            row = _execute(
-                conn,
-                "SELECT value FROM settings WHERE user_token = ? AND key = 'preview_events'",
-                (user_token,),
-            ).fetchone() # type: ignore[attr-defined]
-            if not row:
-                continue
-                
-            try:
-                events_raw = json.loads(row["value"])
-            except Exception:
-                continue
-            if not events_raw:
-                continue
-                
-            updated: list[dict] = []
-            timetable_events_list: list[tuple] = []
+        if not user_tokens:
+            return
+
+        settings_to_update: list[tuple] = []
+        all_timetable_events: list[tuple] = []
+
+        # Process in chunks of 500 to avoid parameter limits in SQL IN clause
+        chunk_size = 500
+        for i in range(0, len(user_tokens), chunk_size):
+            chunk = user_tokens[i:i + chunk_size]
+            placeholders = ",".join("?" for _ in chunk)
             
-            for e in events_raw:
-                code = (e.get("course_code") or "").split("-")[0].strip().upper()
-                sess = e.get("session_number", "")
-                is_mandatory = False
-                if code in mandatory_data and sess:
-                    try:
-                        is_mandatory = int(sess) in mandatory_data[code]
-                    except ValueError:
-                        pass
-                        
-                e_updated = dict(e)
-                e_updated["mandatory"] = is_mandatory
-                subject = e.get("title", "").replace("🔴 MANDATORY: ", "")
-                if is_mandatory:
-                    e_updated["title"] = f"🔴 MANDATORY: {subject}"
-                else:
-                    e_updated["title"] = subject
-                updated.append(e_updated)
-                
-                starts_at = _DT.fromisoformat(e["starts_at"])
-                ends_at = _DT.fromisoformat(e["ends_at"])
-                
-                ev_obj = TimetableEvent(
-                    uid=e["uid"],
-                    subject_name=subject,
-                    course_code=e.get("course_code", ""),
-                    faculty=e.get("faculty", ""),
-                    classroom=e.get("classroom", ""),
-                    starts_at=starts_at,
-                    ends_at=ends_at,
-                    status=e.get("status", ""),
-                    mandatory=is_mandatory,
-                    session_number=sess,
-                    activity_name=e.get("activity_name", ""),
-                )
-                timetable_events_list.append(
-                    (user_token, e["uid"], json.dumps(ev_obj.google_payload()), now)
-                )
-                
-            # Write updated settings
-            _execute(
+            settings_rows = _execute(
                 conn,
-                "INSERT INTO settings(user_token, key, value) VALUES(?, 'preview_events', ?) "
+                f"SELECT user_token, value FROM settings WHERE key = 'preview_events' AND user_token IN ({placeholders})",
+                tuple(chunk),
+            ).fetchall() # type: ignore[attr-defined]
+
+            for row in settings_rows:
+                user_token = row["user_token"]
+                try:
+                    events_raw = json.loads(row["value"])
+                except Exception:
+                    continue
+                if not events_raw:
+                    continue
+                
+                updated: list[dict] = []
+                timetable_events_list: list[tuple] = []
+                any_changed = False
+                
+                for e in events_raw:
+                    code = (e.get("course_code") or "").split("-")[0].strip().upper()
+                    sess = e.get("session_number", "")
+                    is_mandatory = False
+                    if code in mandatory_data and sess:
+                        try:
+                            is_mandatory = int(sess) in mandatory_data[code]
+                        except ValueError:
+                            pass
+                            
+                    old_mandatory = e.get("mandatory", False)
+                    if old_mandatory != is_mandatory:
+                        any_changed = True
+                        
+                    e_updated = dict(e)
+                    e_updated["mandatory"] = is_mandatory
+                    subject = e.get("title", "").replace("🔴 MANDATORY: ", "")
+                    if is_mandatory:
+                        e_updated["title"] = f"🔴 MANDATORY: {subject}"
+                    else:
+                        e_updated["title"] = subject
+                    updated.append(e_updated)
+                    
+                    starts_at = _DT.fromisoformat(e["starts_at"])
+                    ends_at = _DT.fromisoformat(e["ends_at"])
+                    
+                    ev_obj = TimetableEvent(
+                        uid=e["uid"],
+                        subject_name=subject,
+                        course_code=e.get("course_code", ""),
+                        faculty=e.get("faculty", ""),
+                        classroom=e.get("classroom", ""),
+                        starts_at=starts_at,
+                        ends_at=ends_at,
+                        status=e.get("status", ""),
+                        mandatory=is_mandatory,
+                        session_number=sess,
+                        activity_name=e.get("activity_name", ""),
+                    )
+                    timetable_events_list.append(
+                        (user_token, e["uid"], json.dumps(ev_obj.google_payload()), now)
+                    )
+                
+                if any_changed:
+                    settings_to_update.append((user_token, "preview_events", json.dumps(updated)))
+                    all_timetable_events.extend(timetable_events_list)
+
+        # Batch write settings updates
+        if settings_to_update:
+            _executemany(
+                conn,
+                "INSERT INTO settings(user_token, key, value) VALUES(?, ?, ?) "
                 "ON CONFLICT(user_token, key) DO UPDATE SET value = excluded.value",
-                (user_token, json.dumps(updated)),
+                settings_to_update,
             )
             
-            # Write updated timetable_events
-            if timetable_events_list:
-                _executemany(
-                    conn,
-                    "INSERT INTO timetable_events(user_token, uid, payload, updated_at) VALUES(?, ?, ?, ?) "
-                    "ON CONFLICT(user_token, uid) DO UPDATE SET payload = excluded.payload, updated_at = excluded.updated_at",
-                    timetable_events_list,
-                )
+        # Batch write timetable events updates
+        if all_timetable_events:
+            _executemany(
+                conn,
+                "INSERT INTO timetable_events(user_token, uid, payload, updated_at) VALUES(?, ?, ?, ?) "
+                "ON CONFLICT(user_token, uid) DO UPDATE SET payload = excluded.payload, updated_at = excluded.updated_at",
+                all_timetable_events,
+            )
 
 
