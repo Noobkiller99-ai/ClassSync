@@ -109,15 +109,18 @@ def create_app(test_config: dict | None = None) -> Flask:
         events_raw: list[dict] = get_setting(db, tok, "preview_events", [])  # type: ignore[assignment]
         google_ready = bool(get_setting(db, tok, "google_credentials", None))
         tcs_ready = bool(session.get("tcs_credentials_encrypted"))
-        spp_ready = bool(session.get("spp_credentials_encrypted"))
+        # IMPORTANT: use DB-backed 'source' (survives Google OAuth redirects);
+        # do NOT rely solely on session["spp_credentials_encrypted"] which may
+        # be cleared when the browser follows the Google OAuth redirect chain.
         source = get_setting(db, tok, "source", "tcs")  # "tcs" or "spp"
+        spp_ready = (source == "spp")
         batch = _get_user_batch(app, tok)
         mandatory_data = get_mandatory_sessions(db, batch)
         synced = bool(
             google_ready
             and any(e.get("synced_event_id") for e in list_event_payloads(db, tok))
         )
-        # Derive display name from stored credentials
+        # Derive display name
         username = ""
         if tcs_ready:
             creds = _stored_tcs_credentials(app, tok)
@@ -125,10 +128,18 @@ def create_app(test_config: dict | None = None) -> Flask:
                 raw = creds.get("username", "").split("@")[0]
                 username = raw.replace(".", " ").title()
 
-        # SPP user info stored during login
+        # SPP user info stored in DB during login (survives OAuth)
         spp_user_info: dict = get_setting(db, tok, "spp_user_info", {}) or {}  # type: ignore[assignment]
         if spp_ready and spp_user_info:
             username = spp_user_info.get("fullName", username).title()
+        elif spp_ready and not username:
+            # Fallback: derive name from stored email marker in session
+            from .security import decrypt_json
+            enc = session.get("spp_credentials_encrypted")
+            if enc:
+                creds_spp = decrypt_json(enc) or {}
+                raw = creds_spp.get("email", "").split("@")[0]
+                username = raw.replace(".", " ").title()
 
         # Derive Google email from stored credentials
         google_email = ""

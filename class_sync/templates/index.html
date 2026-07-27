@@ -174,7 +174,7 @@
         </span>
       </div>
       <div class="step-bar"></div>
-      <div class="step {{ 'done' if (events and google_ready) else ('active' if (tcs_ready and events) else '') }}">
+      <div class="step {{ 'done' if (events and google_ready) else ('active' if ((tcs_ready or spp_ready) and events) else '') }}">
         <div class="step-num" aria-label="Step 2">
           {% if events and google_ready %}✓{% else %}2{% endif %}
         </div>
