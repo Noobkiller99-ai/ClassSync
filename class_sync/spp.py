@@ -131,6 +131,10 @@ def parse_spp_sessions(
         # Build a stable UID using SPP session ID (most reliable) or fallback
         uid = session_id or f"{session_date}|{start_time}|{course_name}"
 
+        # Extract clean numeric session number (e.g. "Session 17" or "17" -> "17")
+        num_m = re.search(r"\d+", title_raw)
+        session_num = num_m.group(0) if num_m else title_raw
+
         events.append(
             TimetableEvent(
                 uid=uid,
@@ -142,7 +146,7 @@ def parse_spp_sessions(
                 ends_at=ends_at,
                 status="",               # Attendance status not available in schedule view
                 mandatory=False,
-                session_number=title_raw,
+                session_number=session_num,
                 activity_name=activity,
             )
         )

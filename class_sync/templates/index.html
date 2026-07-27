@@ -560,9 +560,16 @@
             {% endif %}
           </div>
           {% if mandatory_data %}
-            {% for code, sessions in mandatory_data.items() %}
+            {% for code, data in mandatory_data.items() %}
+              {% set sessions = data.sessions if data is mapping else data %}
+              {% set course_name = data.course_name if data is mapping else '' %}
               <div class="mandatory-course-row">
-                <span class="mandatory-code">{{ code }}</span>
+                <div style="display:flex; align-items:center; gap:8px; flex-wrap:wrap;">
+                  <span class="mandatory-code">{{ code }}</span>
+                  {% if course_name %}
+                    <span class="mandatory-name" style="font-size:0.85rem; color:var(--text-dim); font-weight:500;">· {{ course_name }}</span>
+                  {% endif %}
+                </div>
                 <span class="mandatory-sessions">
                   {% if sessions %}
                     {% for s in sessions %}

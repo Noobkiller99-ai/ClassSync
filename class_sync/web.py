@@ -239,6 +239,8 @@ def create_app(test_config: dict | None = None) -> Flask:
         set_setting(db, tok, "spp_user_info", user_info)
         batch = _extract_batch_from_email(email)
         set_setting(db, tok, "batch", batch)
+        mandatory_data = get_mandatory_sessions(db, batch)
+        events = apply_mandatory_flags(events, mandatory_data)
         # Build serialised events using SPP google-payload shape
         serialised = _serialise_spp_events(events)
         set_setting(db, tok, "preview_events", serialised)
@@ -290,6 +292,9 @@ def create_app(test_config: dict | None = None) -> Flask:
             flash(str(exc), "error")
             return redirect(url_for("index"))
         set_setting(db, tok, "spp_user_info", user_info)
+        batch = _extract_batch_from_email(email)
+        mandatory_data = get_mandatory_sessions(db, batch)
+        events = apply_mandatory_flags(events, mandatory_data)
         serialised = _serialise_spp_events(events)
         set_setting(db, tok, "preview_events", serialised)
         _save_spp_events(db, tok, events)
@@ -334,16 +339,27 @@ def create_app(test_config: dict | None = None) -> Flask:
                 session_info = parse_mandatory_sessions_from_pdf(pdf_bytes, course_code)
                 if session_info:
                     current_sessions = get_mandatory_sessions(db, batch)
-                    existing = current_sessions.get(course_code, [])
+                    existing_data = current_sessions.get(course_code, {})
+                    if isinstance(existing_data, dict):
+                        existing_list = existing_data.get("sessions", [])
+                        existing_name = existing_data.get("course_name", "")
+                    else:
+                        existing_list = existing_data
+                        existing_name = ""
+
                     if not getattr(session_info, "all_sessions", None):
                         merged = session_info.mandatory_sessions
                     else:
                         covered_set = set(session_info.all_sessions)
                         mandatory_set = set(session_info.mandatory_sessions)
-                        keep_existing = [s for s in existing if s not in covered_set]
+                        keep_existing = [s for s in existing_list if s not in covered_set]
                         merged = sorted(list(set(keep_existing + list(mandatory_set))))
                     
-                    current_sessions[course_code] = merged
+                    course_name = getattr(session_info, "course_name", "") or existing_name
+                    current_sessions[course_code] = {
+                        "sessions": merged,
+                        "course_name": course_name,
+                    }
                     save_mandatory_sessions(db, batch, current_sessions)
                     success_count += 1
                     

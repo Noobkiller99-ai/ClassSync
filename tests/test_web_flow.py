@@ -118,7 +118,7 @@ def test_wisenet_upload_and_global_sharing(tmp_path):
     db = app.config["DATABASE"]
     sessions = get_mandatory_sessions(db, "general")
     assert "FIN521" in sessions
-    assert sessions["FIN521"] == [1, 3, 5]
+    assert sessions["FIN521"]["sessions"] == [1, 3, 5]
 
 
 def test_google_calendar_duplicate_prevention_and_color():
