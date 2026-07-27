@@ -204,6 +204,8 @@ class SppClient:
     only persistent state (stored in the user's Flask session / browser).
     """
 
+    # ── Internal state ──────────────────────────────────────────────────────
+
     def __init__(self, session: requests.Session | None = None):
         self._session = session or requests.Session()
         self._session.headers.update({
@@ -214,10 +216,12 @@ class SppClient:
             ),
             "Accept": "*/*",
             "Accept-Language": "en-GB,en-US;q=0.9,en;q=0.8",
+            "Referer": f"{SPP_BASE_URL}/student/login",
+            "Origin": SPP_BASE_URL,
         })
         self._csrf_token: str = ""
         self._user_id: str = ""
-
+        self._user_info: dict = {}
     # ── Authentication ──────────────────────────────────────────────────────
 
     def login(self, email: str, password: str) -> None:
@@ -260,16 +264,23 @@ class SppClient:
         # ── Step 3: Obtain CSRF token from the authenticated home page ────
         self._fetch_csrf_token()
 
-        # ── Step 4: Verify we can call an authenticated endpoint ──────────
+        # ── Step 4: Verify session works via a GET call (no CSRF needed) ──────
+        # getUserInfo fails as POST from server-side (Salesforce requires browser
+        # signed JWT for POST). Use getMenuItems GET instead to verify the session.
         try:
-            info = self.fetch_user_info()
-            if not info:
-                raise SppError("Login succeeded but no user data was returned.")
-            self._user_id = info.get("userId", "") or info.get("id", "")
+            menu = self._apex_get(
+                classname=CLS_AUTH,
+                method="getMenuItems",
+                params={"menuName": "Main_Navigation"},
+            )
+            if menu is None:
+                raise SppError("Session established but menu returned no data. Check credentials.")
+            # Extract user info from page HTML (embedded in LWR JS bootstrap)
+            self._user_info = self._get_user_info_from_page()
         except SppError:
             raise
         except Exception as exc:
-            raise SppError(f"SPP login verification failed: {exc}") from exc
+            raise SppError(f"SPP session verification failed: {exc}") from exc
 
     def _establish_session_via_frontdoor(self, frontdoor_url: str) -> None:
         """GET the full frontdoor URL (or build one from a bare sid) to receive session cookies."""
@@ -386,21 +397,59 @@ class SppClient:
 
     def fetch_user_info(self) -> dict:
         """
-        Call ``getUserInfo`` and return the raw dict.
+        Return user info dict.
 
-        Returns student name, email, batch, current term ID, etc.
+        getUserInfo is not callable as a server-side POST (Salesforce rejects it
+        with 401 unless the CSRF JWT is browser-signed). We instead extract
+        what we need from the student home page HTML + the cached user_info
+        populated during login().
         """
-        result = self._apex_post({
-            "namespace": "",
-            "classname": CLS_AUTH,
-            "method": "getUserInfo",
-            "isContinuation": False,
-            "params": {},
-            "cacheable": False,
-        })
-        if not result:
-            raise SppError("getUserInfo returned no data. Session may not be authenticated.")
-        return result if isinstance(result, dict) else {}
+        if self._user_info:
+            return self._user_info
+        self._user_info = self._get_user_info_from_page()
+        return self._user_info
+
+    def _get_user_info_from_page(self) -> dict:
+        """
+        Scrape user info from the LWR bootstrap embedded in the /student/ HTML.
+
+        Salesforce LWR embeds a JSON context object in a <script> tag that
+        contains the current user's name, email, account ID, etc.
+        Returns a best-effort dict — callers must handle missing keys.
+        """
+        info: dict = {}
+        try:
+            resp = self._session.get(
+                f"{SPP_BASE_URL}/student/",
+                allow_redirects=True,
+                timeout=30,
+            )
+            html = resp.text
+
+            # Extract individual fields from JSON blobs in the LWR boot script
+            field_patterns: list[tuple[str, str]] = [
+                (r'"fullName"\s*:\s*"([^"]+)"', "fullName"),
+                (r'"email"\s*:\s*"([^"]+@[^"]+)"', "email"),
+                (r'"accountId"\s*:\s*"([^"]+)"', "accountId"),
+                (r'"userId"\s*:\s*"([^"]+)"', "userId"),
+                (r'"batchName"\s*:\s*"([^"]+)"', "batchName"),
+                (r'"programCode"\s*:\s*"([^"]+)"', "programCode"),
+                (r'"termId"\s*:\s*"([^"]+)"', "termId"),
+            ]
+            for pattern, key in field_patterns:
+                m = re.search(pattern, html)
+                if m:
+                    info[key] = m.group(1)
+
+            # Also extract CSRF token while we have the page
+            if not self._csrf_token:
+                m = re.search(r'"csrfToken"\s*:\s*"([^"]+)"', html)
+                if m:
+                    self._csrf_token = m.group(1)
+
+        except Exception:
+            pass  # Best-effort — callers handle missing fields
+        return info
 
     def fetch_enrolled_sessions(
         self, start_date: str, end_date: str, session_type: str | None = None
@@ -429,14 +478,11 @@ class SppClient:
 
         Returns raw dict from ``getSessionDetails``.
         """
-        result = self._apex_post({
-            "namespace": "",
-            "classname": CLS_SCHED,
-            "method": "getSessionDetails",
-            "isContinuation": False,
-            "params": {"sessionId": session_id},
-            "cacheable": False,
-        })
+        result = self._apex_get(
+            classname=CLS_SCHED,
+            method="getSessionDetails",
+            params={"sessionId": session_id},
+        )
         return result if isinstance(result, dict) else {}
 
     def fetch_attendance_data(self, account_id: str, term_id: str) -> list[dict]:
@@ -510,7 +556,7 @@ class SppClient:
         email: str,
         password: str,
         now: datetime | None = None,
-        enrich_details: bool = True,
+        enrich_details: bool = False,
     ) -> tuple[list[TimetableEvent], dict]:
         """
         High-level entry point: login → fetch sessions → enrich → parse.
