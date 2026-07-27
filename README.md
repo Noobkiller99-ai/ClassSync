@@ -1,68 +1,132 @@
 # Class Sync
 
-Sync your SPJIMR TCS iON timetable directly to Google Calendar — automatically, for every student.
+**Sync your SPJIMR academic schedule directly to Google Calendar — automatically.**
 
-## User Flow
+Class Sync supports two schedule sources:
+- **TCS iON** (`tcs.ion.indiaisb.com`) — the traditional SPJIMR timetable portal
+- **Salesforce SPP** (`spp.spjimr.org`) — the newer SPJIMR student platform
 
-1. **Land** on Class Sync at `http://127.0.0.1:5002`
-2. **Enter TCS iON credentials** — email (`@spjimr.org`) + password (show/hide toggle included)
-3. **Backend logs into TCS iON** and extracts your personal timetable
-4. **Preview your schedule** — next 2 weeks, grouped by day, colour-coded by subject
-5. **Click "Sign in with Google & Sync Calendar"**
-6. **Google sign-in / consent screen** appears — log in with any Google account
-7. App creates an **SPJIMR Timetable** calendar and inserts all events (with 15-min reminders)
-8. **Done** — events are live in your Google Calendar
+---
 
-> The Google sync button is only shown after your TCS timetable has loaded.  
-> Each browser session is fully isolated — multiple students can use the same server simultaneously.
+## How It Works
 
-## Run
+1. **Choose your source** — TCS iON or Salesforce SPP
+2. **Sign in** with your SPJIMR email and password
+3. **Preview your timetable** — next 2 weeks, grouped by day, colour-coded by subject
+4. **Click "Sync to Google Calendar"** — sign in with Google if prompted
+5. **Done** — all sessions appear in a dedicated calendar with 15-min reminders
+
+> Each browser session is fully isolated. Multiple students can use the same server simultaneously.  
+> Credentials are **never stored** on our server — only used transiently to fetch your timetable.
+
+---
+
+## Google Calendar Behaviour
+
+| Source | Calendar Name | Colour |
+|---|---|---|
+| TCS iON | `SPJIMR Timetable` | Default Google blue |
+| Salesforce SPP | `SPJIMR Timetable` | SPJIMR Purple `#531f75` |
+
+- Events are **upserted** — re-syncing updates existing events rather than creating duplicates
+- Mandatory sessions are flagged 🔴 in the title and coloured red in Google Calendar
+- Exams / evaluations are flagged 📝 and coloured orange
+
+---
+
+## Run Locally
 
 ```powershell
-# Install dependencies
+# 1. Install dependencies
 python -m pip install -r requirements.txt
 
-# Run with live TCS iON
+# 2. Copy and fill in the environment file
+Copy-Item .env.example .env
+# Edit .env: add GOOGLE_CLIENT_ID, GOOGLE_CLIENT_SECRET, GOOGLE_REDIRECT_URI
+
+# 3. Run the app
 python -m flask --app class_sync.web run --port 5002
 
-# Run in sample mode (no TCS credentials needed, for UI testing)
+# Optional: run in sample mode (no TCS credentials needed — for UI testing)
 $env:TCS_SAMPLE_MODE='1'
 python -m flask --app class_sync.web run --port 5002
 ```
 
-## Google OAuth Setup (required for real calendar sync)
+---
+
+## Google OAuth Setup
 
 1. Go to [Google Cloud Console](https://console.cloud.google.com/)
-2. Create a project → Enable **Google Calendar API**
+2. Create a project → Enable the **Google Calendar API**
 3. **APIs & Services → Credentials → Create OAuth 2.0 Client ID**
    - Application type: **Web application**
    - Authorised redirect URI: `http://127.0.0.1:5002/google/callback`
-4. Copy the credentials into a `.env` file (see `.env.example`)
+4. Copy the credentials into `.env`
 
-```powershell
-# Copy the template
-Copy-Item .env.example .env
-# Then fill in GOOGLE_CLIENT_ID, GOOGLE_CLIENT_SECRET, GOOGLE_REDIRECT_URI
+```env
+GOOGLE_CLIENT_ID=your-client-id.apps.googleusercontent.com
+GOOGLE_CLIENT_SECRET=your-secret
+GOOGLE_REDIRECT_URI=http://127.0.0.1:5002/google/callback
 ```
 
-The app auto-loads `.env` on startup. If `GOOGLE_CLIENT_ID` is not set, Google sync runs in dry-run (simulated) mode.
+> If `GOOGLE_CLIENT_ID` is not set, the app runs in **dry-run mode** — sync is simulated and no real calendar events are created.
 
-## Required Environment Variables (Production)
+---
 
-| Variable | Description |
-|---|---|
-| `SECRET_KEY` | Flask session secret (any long random string) |
-| `CREDENTIAL_ENCRYPTION_KEY` | Fernet key for stored TCS creds (derived from SECRET_KEY if blank) |
-| `GOOGLE_CLIENT_ID` | OAuth 2.0 client ID from Google Cloud Console |
-| `GOOGLE_CLIENT_SECRET` | OAuth 2.0 client secret |
-| `GOOGLE_REDIRECT_URI` | Must match what's registered in Google Cloud Console |
-| `ADMIN_TOKEN` | Optional — enables the `/admin/refresh` endpoint |
+## Environment Variables
+
+| Variable | Required | Description |
+|---|---|---|
+| `SECRET_KEY` | ✅ | Flask session secret — any long random string |
+| `CREDENTIAL_ENCRYPTION_KEY` | ☐ | Fernet key for encrypting stored credentials (derived from `SECRET_KEY` if blank) |
+| `GOOGLE_CLIENT_ID` | ✅ | OAuth 2.0 client ID from Google Cloud Console |
+| `GOOGLE_CLIENT_SECRET` | ✅ | OAuth 2.0 client secret |
+| `GOOGLE_REDIRECT_URI` | ✅ | Must match what's registered in Google Cloud Console |
+| `ADMIN_TOKEN` | ☐ | Enables the admin refresh endpoint |
+| `TCS_SAMPLE_MODE` | ☐ | Set to `1` to use built-in sample timetable data (no TCS login needed) |
+| `DATABASE_URL` | ☐ | PostgreSQL URL for production (defaults to SQLite locally) |
+
+---
 
 ## Architecture
 
-- **Flask** backend (Python 3.10+)
-- **SQLite** — per-user isolated data keyed by UUID session token
-- **TCS iON scraper** — logs in, discovers exam session IDs, fetches timetable JSON
-- **Google Calendar API** — upserts events into a dedicated `SPJIMR Timetable` calendar
-- **Weekly background scheduler** — auto-refreshes all connected users every Monday at 2 AM
-- **Fernet encryption** — TCS credentials never stored in plain text
+```
+Browser
+  │
+  ├─ GET /          → index route (source-aware: TCS or SPP)
+  ├─ POST /tcs/login  → TcsClient.fetch_timetable()
+  ├─ POST /spp/login  → SppClient.fetch_timetable()
+  ├─ POST /sync     → GoogleCalendarClient.sync()
+  └─ GET  /google/callback → OAuth token exchange
+         │
+         ├── class_sync/tcs.py          TCS iON scraper & parser
+         ├── class_sync/spp.py          Salesforce SPP client (Apex REST)
+         ├── class_sync/google_calendar.py   Google Calendar API wrapper
+         ├── class_sync/models.py        TimetableEvent data class
+         ├── class_sync/store.py         SQLite / PostgreSQL persistence
+         ├── class_sync/web.py           Flask routes & session management
+         └── class_sync/security.py      Fernet encryption helpers
+```
+
+**Key design decisions:**
+- **No plaintext credentials** — TCS passwords are encrypted with Fernet; SPP passwords are never stored at all
+- **Session isolation** — each browser gets a UUID token; all DB records are scoped to it
+- **GET-only Salesforce API calls** — Salesforce LWR's POST endpoints require a browser-signed CSRF JWT; we use only `cacheable=true` GET endpoints which work without it
+- **Upsert semantics** — Google Calendar events use `extendedProperties.private.classSyncUid` as the stable identity key
+
+---
+
+## Tests
+
+```powershell
+python -m pytest tests/ -q
+```
+
+64 tests cover the TCS parser, Google Calendar upsert logic, web routes, and session management.
+
+---
+
+## Deployment
+
+The app is configured for **Vercel** (see `vercel.json`) with PostgreSQL for persistent storage.  
+It also runs on any WSGI host (Gunicorn, Heroku, Railway) with the provided `Procfile`.
