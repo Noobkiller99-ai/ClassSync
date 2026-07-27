@@ -36,7 +36,8 @@ SPP_APEX_PATH      = "/student/webruntime/api/apex/execute"
 SPP_FRONTDOOR_PATH = "/vforcesite/secur/frontdoor.jsp"
 
 # Salesforce Apex classname IDs (from HAR analysis)
-CLS_AUTH    = "@udd/01pOS00000rnWER"   # getUserInfo, getMenuItems, login, fetchEmergencyDetails
+CLS_LOGIN   = "@udd/01pOS00000rnWDr"   # login (guest)
+CLS_AUTH    = "@udd/01pOS00000rnWER"   # getUserInfo, getMenuItems, fetchEmergencyDetails
 CLS_SCHED   = "@udd/01pOS00000rnWET"   # getEnrolledSessions, getSessionDetails, getSessionTypeOptions
 CLS_ATTEND  = "@udd/01pOS00000rnWEP"   # getData (attendance history)
 CLS_NOTIF   = "@udd/01pOS00000rnWDv"   # getPortalNotifications
@@ -223,43 +224,38 @@ class SppClient:
         """
         Authenticate against the SPP portal.
 
-        Step 1: Call the Apex ``login`` method as a guest to get a ``sid``.
-        Step 2: Follow the ``frontdoor.jsp`` redirect so the session receives
-                its authentication cookies.
+        Step 1: POST the Apex ``login`` method (guest mode) with email + password.
+                The response ``returnValue`` is the full frontdoor URL string.
+        Step 2: GET the frontdoor URL so the session receives its authentication
+                cookies (sid, sfdc-stream, etc.).
         Step 3: Fetch the student home page to obtain a CSRF token.
+        Step 4: Verify authentication by calling getUserInfo.
         """
         if not email or not password:
             raise SppError("SPJIMR email and password are required.")
 
-        # ── Step 1: Guest login to get sid ────────────────────────────────
+        # ── Step 1: Guest Apex login → returns frontdoor URL ─────────────
         login_payload = {
             "namespace": "",
-            "classname": CLS_AUTH,
+            "classname": CLS_LOGIN,
             "method": "login",
             "isContinuation": False,
             "params": {"username": email, "password": password},
             "cacheable": False,
         }
-        resp = self._apex_post_guest(login_payload)
+        resp_data = self._apex_post_guest(login_payload)
 
-        # Extract sid from response — it is either in the returnValue or
-        # in the response redirect URL
-        return_value = resp.get("returnValue", {}) or {}
-        sid = (
-            return_value.get("sid")
-            or return_value.get("sessionId")
-            or return_value.get("accessToken")
-            or ""
-        )
+        # returnValue is the full frontdoor URL string, e.g.:
+        # "https://spp.spjimr.org/vforcesite/secur/frontdoor.jsp?...&sid=TOKEN..."
+        frontdoor_url = resp_data.get("returnValue", "")
+        if not frontdoor_url or not isinstance(frontdoor_url, str):
+            raise SppError(
+                "SPP login did not return a session URL. "
+                "Please check your SPJIMR email and password."
+            )
 
-        # ── Step 2: If we got a sid, hit frontdoor to set session cookies ─
-        if sid:
-            self._establish_session_via_frontdoor(sid)
-        else:
-            # Some SPP configurations redirect back a Set-Cookie header
-            # directly on the guest Apex call; check if we are already logged in.
-            # Try fetching user info — if it works, we're authenticated.
-            pass
+        # ── Step 2: Follow frontdoor URL to set session cookies ───────────
+        self._establish_session_via_frontdoor(frontdoor_url)
 
         # ── Step 3: Obtain CSRF token from the authenticated home page ────
         self._fetch_csrf_token()
@@ -275,12 +271,17 @@ class SppClient:
         except Exception as exc:
             raise SppError(f"SPP login verification failed: {exc}") from exc
 
-    def _establish_session_via_frontdoor(self, sid: str) -> None:
-        """Hit the Salesforce frontdoor URL with the sid to get session cookies."""
-        url = (
-            f"{SPP_BASE_URL}{SPP_FRONTDOOR_PATH}"
-            f"?sid={sid}&retURL=%2Fstudent%2F"
-        )
+    def _establish_session_via_frontdoor(self, frontdoor_url: str) -> None:
+        """GET the full frontdoor URL (or build one from a bare sid) to receive session cookies."""
+        # If caller passed a full URL, use it directly.
+        # If they passed a bare sid token, build the standard frontdoor URL.
+        if frontdoor_url.startswith("http"):
+            url = frontdoor_url
+        else:
+            url = (
+                f"{SPP_BASE_URL}{SPP_FRONTDOOR_PATH}"
+                f"?sid={frontdoor_url}&retURL=%2Fstudent%2F"
+            )
         try:
             self._session.get(url, allow_redirects=True, timeout=30)
         except Exception as exc:
