@@ -47,6 +47,15 @@ from .tcs import (
     parse_tcs_attendance,
     serialize_events,
 )
+from .spp import (
+    SppClient,
+    SppError,
+    parse_spp_sessions,
+    serialize_spp_events,
+    spp_google_payload,
+    next_two_weeks_spp,
+    SOURCE_SPP,
+)
 
 
 def create_app(test_config: dict | None = None) -> Flask:
@@ -100,19 +109,26 @@ def create_app(test_config: dict | None = None) -> Flask:
         events_raw: list[dict] = get_setting(db, tok, "preview_events", [])  # type: ignore[assignment]
         google_ready = bool(get_setting(db, tok, "google_credentials", None))
         tcs_ready = bool(session.get("tcs_credentials_encrypted"))
+        spp_ready = bool(session.get("spp_credentials_encrypted"))
+        source = get_setting(db, tok, "source", "tcs")  # "tcs" or "spp"
         batch = _get_user_batch(app, tok)
         mandatory_data = get_mandatory_sessions(db, batch)
         synced = bool(
             google_ready
             and any(e.get("synced_event_id") for e in list_event_payloads(db, tok))
         )
-        # Derive display name from stored email
+        # Derive display name from stored credentials
         username = ""
         if tcs_ready:
             creds = _stored_tcs_credentials(app, tok)
             if creds:
                 raw = creds.get("username", "").split("@")[0]
                 username = raw.replace(".", " ").title()
+
+        # SPP user info stored during login
+        spp_user_info: dict = get_setting(db, tok, "spp_user_info", {}) or {}  # type: ignore[assignment]
+        if spp_ready and spp_user_info:
+            username = spp_user_info.get("fullName", username).title()
 
         # Derive Google email from stored credentials
         google_email = ""
@@ -128,6 +144,9 @@ def create_app(test_config: dict | None = None) -> Flask:
             google_ready=google_ready,
             google_configured=app.config["GOOGLE_CONFIGURED"],
             tcs_ready=tcs_ready,
+            spp_ready=spp_ready,
+            source=source,
+            spp_user_info=spp_user_info,
             mandatory_data=mandatory_data,
             is_local=IS_LOCAL,
             event_groups=event_groups,
@@ -174,10 +193,96 @@ def create_app(test_config: dict | None = None) -> Flask:
         db = app.config["DATABASE"]
         session.pop("tcs_credentials_encrypted", None)
         delete_setting(db, tok, "batch")
+        delete_setting(db, tok, "source")
         delete_setting(db, tok, "preview_events")
         delete_setting(db, tok, "google_credentials")
         clear_events(db, tok)
         flash("Session cleared. Enter your TCS iON credentials to start over.", "info")
+        return redirect(url_for("index"))
+
+    # ── SPP (Salesforce) Routes ───────────────────────────────────────────────
+
+    @app.post("/spp/login")
+    def spp_login():
+        tok = _user_token()
+        db  = app.config["DATABASE"]
+        email    = request.form.get("spp_email", "").strip()
+        password = request.form.get("spp_password", "")
+        if not email or not password:
+            flash("Please enter your SPJIMR email and password.", "error")
+            return redirect(url_for("index"))
+        if not email.lower().endswith("@spjimr.org"):
+            flash("Class Sync is limited to SPJIMR student accounts (@spjimr.org).", "error")
+            return redirect(url_for("index"))
+        try:
+            client = SppClient()
+            events, user_info = client.fetch_timetable(email, password)
+        except SppError as exc:
+            flash(str(exc), "error")
+            return redirect(url_for("index"))
+        # Credentials are NOT stored — only session cookies would persist.
+        # We store a non-secret encrypted marker so the UI knows SPP is connected.
+        from .security import encrypt_json
+        session["spp_credentials_encrypted"] = encrypt_json({"email": email})
+        set_setting(db, tok, "source", "spp")
+        set_setting(db, tok, "spp_user_info", user_info)
+        batch = _extract_batch_from_email(email)
+        set_setting(db, tok, "batch", batch)
+        # Build serialised events using SPP google-payload shape
+        serialised = _serialise_spp_events(events)
+        set_setting(db, tok, "preview_events", serialised)
+        # Save to timetable_events table using SPP google payload
+        _save_spp_events(db, tok, events)
+        flash(
+            f"Salesforce SPP connected — {len(events)} events loaded for the next 2 weeks.",
+            "success",
+        )
+        return redirect(url_for("index"))
+
+    @app.post("/spp/reset")
+    def spp_reset():
+        tok = _user_token()
+        db  = app.config["DATABASE"]
+        session.pop("spp_credentials_encrypted", None)
+        delete_setting(db, tok, "source")
+        delete_setting(db, tok, "spp_user_info")
+        delete_setting(db, tok, "batch")
+        delete_setting(db, tok, "preview_events")
+        delete_setting(db, tok, "google_credentials")
+        clear_events(db, tok)
+        flash("Salesforce session cleared. Choose a source to start over.", "info")
+        return redirect(url_for("index"))
+
+    @app.post("/spp/preview")
+    @app.get("/spp/preview")
+    def spp_preview():
+        tok = _user_token()
+        db  = app.config["DATABASE"]
+        spp_creds_enc = session.get("spp_credentials_encrypted")
+        if not spp_creds_enc:
+            flash("Connect Salesforce SPP first.", "error")
+            return redirect(url_for("index"))
+        from .security import decrypt_json
+        creds = decrypt_json(spp_creds_enc)
+        if not creds:
+            flash("SPP session expired. Please reconnect.", "error")
+            return redirect(url_for("index"))
+        email    = creds.get("email", "")
+        password = request.form.get("spp_refresh_password", "")
+        if not password:
+            flash("Re-enter your SPJIMR password to refresh.", "error")
+            return redirect(url_for("index"))
+        try:
+            client = SppClient()
+            events, user_info = client.fetch_timetable(email, password)
+        except SppError as exc:
+            flash(str(exc), "error")
+            return redirect(url_for("index"))
+        set_setting(db, tok, "spp_user_info", user_info)
+        serialised = _serialise_spp_events(events)
+        set_setting(db, tok, "preview_events", serialised)
+        _save_spp_events(db, tok, events)
+        flash(f"Timetable refreshed — {len(events)} events for the next 2 weeks.", "success")
         return redirect(url_for("index"))
 
     @app.post("/wisenet/upload")
@@ -253,6 +358,10 @@ def create_app(test_config: dict | None = None) -> Flask:
     @app.get("/preview")
     def preview():
         tok = _user_token()
+        db  = app.config["DATABASE"]
+        source = get_setting(db, tok, "source", "tcs")
+        if source == "spp":
+            return redirect(url_for("spp_preview"))
         credentials = _stored_tcs_credentials(app, tok)
         if not credentials:
             flash("Add your TCS iON credentials first.", "error")
@@ -262,7 +371,6 @@ def create_app(test_config: dict | None = None) -> Flask:
         except TcsError as exc:
             flash(str(exc), "error")
             return redirect(url_for("index"))
-        db = app.config["DATABASE"]
         set_setting(db, tok, "preview_events", serialize_events(events))
         save_events(db, tok, events)
         flash(f"Timetable refreshed — {len(events)} events for the next 2 weeks.", "success")
@@ -271,9 +379,10 @@ def create_app(test_config: dict | None = None) -> Flask:
     @app.post("/sync")
     def sync():
         tok = _user_token()
-        db = app.config["DATABASE"]
+        db  = app.config["DATABASE"]
+        source = get_setting(db, tok, "source", "tcs")
         if not get_setting(db, tok, "preview_events", []):
-            flash("Fetch your TCS iON timetable first.", "error")
+            flash("Fetch your timetable first.", "error")
             return redirect(url_for("index"))
         if not app.config["GOOGLE_CONFIGURED"]:
             flash(
@@ -284,14 +393,12 @@ def create_app(test_config: dict | None = None) -> Flask:
             return redirect(url_for("index"))
         stored_creds = get_setting(db, tok, "google_credentials", None)
         if _google_credentials_valid(stored_creds):
-            # Credentials already stored and valid — sync directly without re-authenticating.
             try:
-                result = _sync_calendar(app, tok)
+                result = _sync_calendar(app, tok, source=str(source))
                 flash(f"Synced! {result.imported} events added to your Google Calendar.", "success")
             except Exception as exc:
                 flash(f"Calendar sync failed: {exc}", "error")
             return redirect(url_for("index"))
-        # No valid credentials yet — start the OAuth flow.
         session["post_google_redirect"] = "sync"
         return redirect(url_for("google_login"))
 
@@ -312,6 +419,8 @@ def create_app(test_config: dict | None = None) -> Flask:
     @app.get("/google/callback")
     def google_callback():
         tok = _user_token()
+        db  = app.config["DATABASE"]
+        source = get_setting(db, tok, "source", "tcs")
         # Honour explicit dry_run param (used in tests / when no GOOGLE_CLIENT_ID)
         is_dry_run = request.args.get("dry_run") == "1"
         client = GoogleCalendarClient(dry_run=is_dry_run or None)
@@ -321,12 +430,11 @@ def create_app(test_config: dict | None = None) -> Flask:
         except Exception as exc:
             flash(f"Google sign-in failed: {exc}", "error")
             return redirect(url_for("index"))
-        db = app.config["DATABASE"]
         set_setting(db, tok, "google_credentials", token)
         flash("Google Calendar connected.", "success")
         if session.pop("post_google_redirect", None) == "sync":
             try:
-                result = _sync_calendar(app, tok)
+                result = _sync_calendar(app, tok, source=str(source))
                 flash(f"Done! {result.imported} events synced to your Google Calendar.", "success")
             except Exception as exc:
                 flash(f"Calendar sync failed: {exc}", "error")
@@ -395,7 +503,7 @@ def _fetch_timetable(app: Flask, credentials: dict, user_token: str | None = Non
     return events
 
 
-def _sync_calendar(app: Flask, user_token: str):
+def _sync_calendar(app: Flask, user_token: str, source: str = "tcs"):
     db = app.config["DATABASE"]
     credentials = get_setting(db, user_token, "google_credentials", None)
     client = GoogleCalendarClient(
@@ -403,7 +511,7 @@ def _sync_calendar(app: Flask, user_token: str):
         dry_run=bool(credentials and credentials.get("dry_run")) or app.config.get("TESTING", False),
     )
     payloads = list_event_payloads(db, user_token)
-    result = client.sync(payloads)
+    result = client.sync(payloads, source=source)
     mark_many_synced(db, user_token, result.event_ids)
     return result
 
@@ -502,9 +610,14 @@ def _get_user_batch(app: Flask, user_token: str) -> str:
     batch = get_setting(db, user_token, "batch", None)
     if batch:
         return str(batch)
+    # Try TCS credentials
     creds = _stored_tcs_credentials(app, user_token)
     if creds:
         return _extract_batch_from_email(creds.get("username", ""))
+    # Try SPP stored email
+    spp_info: dict = get_setting(db, user_token, "spp_user_info", {}) or {}  # type: ignore[assignment]
+    if spp_info:
+        return _extract_batch_from_email(spp_info.get("email", ""))
     return "general"
 
 
@@ -519,6 +632,47 @@ def _google_credentials_valid(credentials: object) -> bool:
     if credentials.get("dry_run"):
         return True
     return bool(credentials.get("refresh_token"))
+
+
+# ── SPP event persistence helpers ──────────────────────────────────────────────
+
+def _serialise_spp_events(events: list) -> list[dict]:
+    """Serialise SPP TimetableEvent objects into the flat dict used by the preview store."""
+    return [
+        {
+            "uid": e.uid,
+            "title": e.title,
+            "course_code": e.course_code,
+            "faculty": e.faculty,
+            "classroom": e.classroom,
+            "starts_at": e.starts_at.isoformat(),
+            "ends_at": e.ends_at.isoformat(),
+            "status": e.status,
+            "description": e.description,
+            "mandatory": e.mandatory,
+            "session_number": e.session_number,
+            "activity_name": e.activity_name,
+            "source": SOURCE_SPP,
+        }
+        for e in events
+    ]
+
+
+def _save_spp_events(db, user_token: str, events: list) -> None:
+    """Persist SPP events to the timetable_events table using SPP google payloads."""
+    import json as _json
+    from datetime import UTC, datetime as _DT
+    from .store import connect, _execute
+    now = _DT.now(UTC).isoformat()
+    with connect(db) as conn:
+        for event in events:
+            payload = spp_google_payload(event)
+            _execute(
+                conn,
+                "INSERT INTO timetable_events(user_token, uid, payload, updated_at) VALUES(?, ?, ?, ?) "
+                "ON CONFLICT(user_token, uid) DO UPDATE SET payload = excluded.payload, updated_at = excluded.updated_at",
+                (user_token, event.uid, _json.dumps(payload), now),
+            )
 
 
 # Public aliases used by tests

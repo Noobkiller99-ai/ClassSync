@@ -3,9 +3,41 @@
 <head>
   <meta charset="utf-8">
   <meta name="viewport" content="width=device-width, initial-scale=1">
-  <meta name="description" content="Sync your SPJIMR TCS iON timetable to Google Calendar automatically.">
+  <meta name="description" content="Sync your SPJIMR academic timetable to Google Calendar automatically — from TCS iON or Salesforce SPP.">
   <title>Class Sync — SPJIMR Timetable</title>
   <link rel="stylesheet" href="{{ url_for('static', filename='styles.css') }}">
+  <style>
+    /* ── SPP / Salesforce accent ──────────────────────────────── */
+    :root {
+      --spp-purple: #531f75;
+      --spp-purple-light: #7b3fa8;
+      --spp-purple-bg: rgba(83,31,117,.10);
+      --spp-purple-border: rgba(83,31,117,.35);
+    }
+    .source-tabs { display:flex; gap:0; border:1px solid var(--border); border-radius:10px; overflow:hidden; margin-bottom:20px; }
+    .source-tab { flex:1; padding:10px 16px; background:transparent; border:none; cursor:pointer;
+      font-size:.9rem; font-weight:600; color:var(--text-muted); transition:all .2s; }
+    .source-tab.active { background:var(--card-bg); color:var(--text); }
+    .source-tab[data-source="spp"].active { background:var(--spp-purple-bg); color:#c084fc; border-color:var(--spp-purple-border); }
+    .spp-form .btn-primary { background:linear-gradient(135deg,var(--spp-purple),var(--spp-purple-light)); }
+    .spp-form .btn-primary:hover { background:linear-gradient(135deg,var(--spp-purple-light),#9b5fd4); }
+    .spp-badge-dot { background:var(--spp-purple-light) !important; }
+    .spp-badge { border-color:var(--spp-purple-border) !important; color:#c084fc !important; background:var(--spp-purple-bg) !important; }
+    .spp-logo { font-size:1.1rem; margin-right:4px; }
+    .spp-info-card { background:var(--spp-purple-bg); border:1px solid var(--spp-purple-border); border-radius:10px;
+      padding:14px 16px; margin-bottom:16px; display:grid; grid-template-columns:1fr 1fr; gap:8px 16px; }
+    .spp-info-row { display:flex; flex-direction:column; gap:2px; }
+    .spp-info-label { font-size:.72rem; color:var(--text-muted); text-transform:uppercase; letter-spacing:.05em; }
+    .spp-info-value { font-size:.88rem; font-weight:600; color:#c084fc; }
+    .refresh-modal-overlay { display:none; position:fixed; inset:0; background:rgba(0,0,0,.6); z-index:200;
+      align-items:center; justify-content:center; }
+    .refresh-modal-overlay.open { display:flex; }
+    .refresh-modal { background:var(--card-bg); border:1px solid var(--border); border-radius:14px;
+      padding:28px 28px 24px; max-width:380px; width:90%; }
+    .refresh-modal h3 { margin:0 0 8px; font-size:1.05rem; }
+    .refresh-modal p { font-size:.85rem; color:var(--text-muted); margin:0 0 16px; }
+    .refresh-modal-btns { display:flex; gap:10px; justify-content:flex-end; margin-top:20px; }
+  </style>
   <script>
     (function() {
       var savedTheme = localStorage.getItem('theme') || 'dark';
@@ -58,20 +90,39 @@
         <div class="brand-logo">CS</div>
         <div>
           <div class="brand-name">Class Sync</div>
-          <div class="brand-sub">SPJIMR · TCS iON → Google Calendar</div>
+          <div class="brand-sub">
+            {% if source == 'spp' or spp_ready %}
+              SPJIMR · Salesforce SPP → Google Calendar
+            {% else %}
+              SPJIMR · TCS iON → Google Calendar
+            {% endif %}
+          </div>
         </div>
       </div>
       <div class="top-badges">
-        <span class="badge {{ 'ok' if tcs_ready else '' }}">
-          <span class="dot"></span>
-          {% if tcs_ready and username %}
-            {{ username }}
-          {% elif tcs_ready %}
-            TCS iON Connected
-          {% else %}
+        {% if spp_ready %}
+          <span class="badge ok spp-badge">
+            <span class="dot spp-badge-dot"></span>
+            <span class="spp-logo">☁</span>
+            {% if username %}{{ username }}{% else %}Salesforce Connected{% endif %}
+          </span>
+        {% elif tcs_ready %}
+          <span class="badge {{ 'ok' if tcs_ready else '' }}">
+            <span class="dot"></span>
+            {% if tcs_ready and username %}
+              {{ username }}
+            {% elif tcs_ready %}
+              TCS iON Connected
+            {% else %}
+              Not signed in
+            {% endif %}
+          </span>
+        {% else %}
+          <span class="badge">
+            <span class="dot"></span>
             Not signed in
-          {% endif %}
-        </span>
+          </span>
+        {% endif %}
         {% if mandatory_data %}
           <span class="badge ok" style="border-color:rgba(239,68,68,.35);color:#f87171;background:rgba(239,68,68,.08)">
             <span class="dot" style="background:#ef4444"></span>
@@ -114,11 +165,13 @@
 
     <!-- ── Step indicator ──────────────────────────────────── -->
     <nav class="steps" aria-label="Setup progress">
-      <div class="step {{ 'done' if tcs_ready else 'active' }}">
+      <div class="step {{ 'done' if (tcs_ready or spp_ready) else 'active' }}">
         <div class="step-num" aria-label="Step 1">
-          {% if tcs_ready %}✓{% else %}1{% endif %}
+          {% if tcs_ready or spp_ready %}✓{% else %}1{% endif %}
         </div>
-        <span class="step-label">TCS iON Login</span>
+        <span class="step-label">
+          {% if spp_ready %}Salesforce Login{% else %}TCS iON Login{% endif %}
+        </span>
       </div>
       <div class="step-bar"></div>
       <div class="step {{ 'done' if (events and google_ready) else ('active' if (tcs_ready and events) else '') }}">
@@ -137,9 +190,9 @@
     </nav>
 
     {# ═══════════════════════════════════════════════════════════
-       STEP 1 — Login
+       STEP 1 — Login (Source Selector)
     ═══════════════════════════════════════════════════════════ #}
-    {% if not tcs_ready %}
+    {% if not tcs_ready and not spp_ready %}
 
       <div class="login-layout">
 
@@ -148,7 +201,7 @@
           <p class="overline">Step 1 of 3</p>
           <h1 class="login-headline">Your classes,<br>in your calendar.</h1>
           <p class="login-desc">
-            Sign in with your SPJIMR TCS iON account. Class Sync fetches your
+            Sign in with your SPJIMR account. Class Sync fetches your
             personal schedule securely and syncs it to Google Calendar with one click.
           </p>
           <ul class="feature-list">
@@ -161,73 +214,164 @@
 
         <!-- Login card -->
         <div class="card">
-          <h2 class="login-card-title">Sign in with TCS iON</h2>
-          <p class="login-card-desc">
-            Use your SPJIMR email (<em>name@spjimr.org</em>) and TCS iON password.
-          </p>
-          <form
-            id="loginForm"
-            method="post"
-            action="{{ url_for('tcs_login') }}"
-            onsubmit="startLoading(this, 'Signing into TCS iON…')"
-          >
-            <div class="form-field">
-              <label for="username">SPJIMR Email</label>
-              <input
-                id="username"
-                name="username"
-                type="email"
-                autocomplete="username"
-                placeholder="yourname@spjimr.org"
-                required
-              >
-            </div>
-            <div class="form-field">
-              <label for="password">Password</label>
-              <div class="password-field">
+
+          <!-- Source Selector Tabs -->
+          <div class="source-tabs" role="tablist" aria-label="Select schedule source">
+            <button
+              id="tab-tcs" role="tab" aria-selected="true" aria-controls="form-tcs"
+              class="source-tab active" data-source="tcs"
+              onclick="selectSource('tcs')" type="button"
+            >
+              🎓 TCS iON
+            </button>
+            <button
+              id="tab-spp" role="tab" aria-selected="false" aria-controls="form-spp"
+              class="source-tab" data-source="spp"
+              onclick="selectSource('spp')" type="button"
+            >
+              ☁ Salesforce
+            </button>
+          </div>
+
+          <!-- TCS iON Form -->
+          <div id="form-tcs" role="tabpanel" aria-labelledby="tab-tcs">
+            <h2 class="login-card-title">Sign in with TCS iON</h2>
+            <p class="login-card-desc">
+              Use your SPJIMR email (<em>name@spjimr.org</em>) and TCS iON password.
+            </p>
+            <form
+              id="loginForm"
+              method="post"
+              action="{{ url_for('tcs_login') }}"
+              onsubmit="startLoading(this, 'Signing into TCS iON…')"
+            >
+              <div class="form-field">
+                <label for="username">SPJIMR Email</label>
                 <input
-                  id="password"
-                  name="password"
-                  type="password"
-                  autocomplete="current-password"
-                  placeholder="Your TCS iON password"
+                  id="username"
+                  name="username"
+                  type="email"
+                  autocomplete="username"
+                  placeholder="yourname@spjimr.org"
                   required
                 >
-                <button
-                  type="button"
-                  class="eye-toggle"
-                  id="eyeToggle"
-                  aria-label="Show password"
-                  onclick="togglePassword()"
-                >
-                  <!-- Eye-open icon (shown when password is hidden) -->
-                  <svg id="eyeOpen" xmlns="http://www.w3.org/2000/svg" width="18" height="18"
-                    viewBox="0 0 24 24" fill="none" stroke="currentColor"
-                    stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
-                    <path d="M1 12s4-8 11-8 11 8 11 8-4 8-11 8-11-8-11-8z"/>
-                    <circle cx="12" cy="12" r="3"/>
-                  </svg>
-                  <!-- Eye-off icon (shown when password is visible) -->
-                  <svg id="eyeOff" xmlns="http://www.w3.org/2000/svg" width="18" height="18"
-                    viewBox="0 0 24 24" fill="none" stroke="currentColor"
-                    stroke-width="2" stroke-linecap="round" stroke-linejoin="round"
-                    style="display:none">
-                    <path d="M17.94 17.94A10.07 10.07 0 0 1 12 20c-7 0-11-8-11-8a18.45 18.45 0 0 1 5.06-5.94M9.9 4.24A9.12 9.12 0 0 1 12 4c7 0 11 8 11 8a18.5 18.5 0 0 1-2.16 3.19m-6.72-1.07a3 3 0 1 1-4.24-4.24"/>
-                    <line x1="1" y1="1" x2="23" y2="23"/>
-                  </svg>
+              </div>
+              <div class="form-field">
+                <label for="password">Password</label>
+                <div class="password-field">
+                  <input
+                    id="password"
+                    name="password"
+                    type="password"
+                    autocomplete="current-password"
+                    placeholder="Your TCS iON password"
+                    required
+                  >
+                  <button
+                    type="button"
+                    class="eye-toggle"
+                    id="eyeToggle"
+                    aria-label="Show password"
+                    onclick="togglePassword()"
+                  >
+                    <!-- Eye-open icon (shown when password is hidden) -->
+                    <svg id="eyeOpen" xmlns="http://www.w3.org/2000/svg" width="18" height="18"
+                      viewBox="0 0 24 24" fill="none" stroke="currentColor"
+                      stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+                      <path d="M1 12s4-8 11-8 11 8 11 8-4 8-11 8-11-8-11-8z"/>
+                      <circle cx="12" cy="12" r="3"/>
+                    </svg>
+                    <!-- Eye-off icon (shown when password is visible) -->
+                    <svg id="eyeOff" xmlns="http://www.w3.org/2000/svg" width="18" height="18"
+                      viewBox="0 0 24 24" fill="none" stroke="currentColor"
+                      stroke-width="2" stroke-linecap="round" stroke-linejoin="round"
+                      style="display:none">
+                      <path d="M17.94 17.94A10.07 10.07 0 0 1 12 20c-7 0-11-8-11-8a18.45 18.45 0 0 1 5.06-5.94M9.9 4.24A9.12 9.12 0 0 1 12 4c7 0 11 8 11 8a18.5 18.5 0 0 1-2.16 3.19m-6.72-1.07a3 3 0 1 1-4.24-4.24"/>
+                      <line x1="1" y1="1" x2="23" y2="23"/>
+                    </svg>
+                  </button>
+                </div>
+              </div>
+              <div class="form-actions">
+                <button type="submit" class="btn btn-primary" id="loginBtn">
+                  <span class="btn-label">Fetch My Timetable →</span>
                 </button>
               </div>
-            </div>
-            <div class="form-actions">
-              <button type="submit" class="btn btn-primary" id="loginBtn">
-                <span class="btn-label">Fetch My Timetable →</span>
-              </button>
-            </div>
-          </form>
-          <p class="security-note">🔒 Credentials are stored in secure browser cookies and never saved on our server.</p>
-        </div>
+            </form>
+            <p class="security-note">🔒 Credentials are stored in secure browser cookies and never saved on our server.</p>
+          </div>
 
-      </div>
+          <!-- Salesforce SPP Form -->
+          <div id="form-spp" role="tabpanel" aria-labelledby="tab-spp" style="display:none">
+            <h2 class="login-card-title" style="color:#c084fc;">☁ Sign in with Salesforce SPP</h2>
+            <p class="login-card-desc">
+              Use your SPJIMR email and the password you use at
+              <em>spp.spjimr.org</em>.
+            </p>
+            <form
+              id="sppLoginForm"
+              class="spp-form"
+              method="post"
+              action="{{ url_for('spp_login') }}"
+              onsubmit="startLoading(this, 'Signing into Salesforce SPP…')"
+            >
+              <div class="form-field">
+                <label for="spp_email">SPJIMR Email</label>
+                <input
+                  id="spp_email"
+                  name="spp_email"
+                  type="email"
+                  autocomplete="username"
+                  placeholder="yourname@spjimr.org"
+                  required
+                >
+              </div>
+              <div class="form-field">
+                <label for="spp_password">Password</label>
+                <div class="password-field">
+                  <input
+                    id="spp_password"
+                    name="spp_password"
+                    type="password"
+                    autocomplete="current-password"
+                    placeholder="Your Salesforce SPP password"
+                    required
+                  >
+                  <button
+                    type="button"
+                    class="eye-toggle"
+                    id="eyeToggleSpp"
+                    aria-label="Show password"
+                    onclick="togglePasswordSpp()"
+                  >
+                    <svg id="eyeOpenSpp" xmlns="http://www.w3.org/2000/svg" width="18" height="18"
+                      viewBox="0 0 24 24" fill="none" stroke="currentColor"
+                      stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+                      <path d="M1 12s4-8 11-8 11 8 11 8-4 8-11 8-11-8-11-8z"/>
+                      <circle cx="12" cy="12" r="3"/>
+                    </svg>
+                    <svg id="eyeOffSpp" xmlns="http://www.w3.org/2000/svg" width="18" height="18"
+                      viewBox="0 0 24 24" fill="none" stroke="currentColor"
+                      stroke-width="2" stroke-linecap="round" stroke-linejoin="round"
+                      style="display:none">
+                      <path d="M17.94 17.94A10.07 10.07 0 0 1 12 20c-7 0-11-8-11-8a18.45 18.45 0 0 1 5.06-5.94M9.9 4.24A9.12 9.12 0 0 1 12 4c7 0 11 8 11 8a18.5 18.5 0 0 1-2.16 3.19m-6.72-1.07a3 3 0 1 1-4.24-4.24"/>
+                      <line x1="1" y1="1" x2="23" y2="23"/>
+                    </svg>
+                  </button>
+                </div>
+              </div>
+              <div class="form-actions">
+                <button type="submit" class="btn btn-primary" id="sppLoginBtn">
+                  <span class="btn-label">Connect Salesforce →</span>
+                </button>
+              </div>
+            </form>
+            <p class="security-note">🔒 Credentials are used only to fetch your timetable and are never stored on our server.</p>
+          </div>
+
+        </div><!-- /.card -->
+
+      </div><!-- /.login-layout -->
 
     {# ═══════════════════════════════════════════════════════════
        STEPS 2 & 3 — Dashboard
@@ -237,23 +381,68 @@
       <!-- Dashboard header -->
       <div class="dash-header">
         <div>
-          <h1 class="dash-title">Your Timetable</h1>
+          <h1 class="dash-title">
+            {% if spp_ready %}☁ Salesforce Timetable{% else %}Your Timetable{% endif %}
+          </h1>
           <p class="dash-sub">
             {{ events | length }} event{{ 's' if events | length != 1 else '' }} · next 2 weeks
           </p>
         </div>
         <div class="dash-actions">
-          <form method="post" action="{{ url_for('preview') }}" onsubmit="startLoading(this, 'Refreshing timetable…')">
-            <button type="submit" class="btn btn-ghost" id="refreshBtn">
+          {% if spp_ready %}
+            <!-- SPP Refresh — requires password re-entry -->
+            <button type="button" class="btn btn-ghost" id="refreshBtn" onclick="openRefreshModal()">
               <span class="btn-label">↻ Refresh</span>
             </button>
-          </form>
-          <form method="post" action="{{ url_for('tcs_reset') }}"
-                onsubmit="return confirm('Sign out and clear your session?')">
-            <button type="submit" class="btn btn-danger btn-sm">Sign out</button>
-          </form>
+            <form method="post" action="{{ url_for('spp_reset') }}"
+                  onsubmit="return confirm('Disconnect Salesforce and clear your session?')">
+              <button type="submit" class="btn btn-danger btn-sm">Disconnect</button>
+            </form>
+          {% else %}
+            <form method="post" action="{{ url_for('preview') }}" onsubmit="startLoading(this, 'Refreshing timetable…')">
+              <button type="submit" class="btn btn-ghost" id="refreshBtn">
+                <span class="btn-label">↻ Refresh</span>
+              </button>
+            </form>
+            <form method="post" action="{{ url_for('tcs_reset') }}"
+                  onsubmit="return confirm('Sign out and clear your session?')">
+              <button type="submit" class="btn btn-danger btn-sm">Sign out</button>
+            </form>
+          {% endif %}
         </div>
       </div>
+
+      {% if spp_ready and spp_user_info %}
+        <!-- SPP Student Info Card -->
+        <div class="spp-info-card">
+          <div class="spp-info-row">
+            <span class="spp-info-label">Name</span>
+            <span class="spp-info-value">{{ spp_user_info.get('fullName', '—') }}</span>
+          </div>
+          <div class="spp-info-row">
+            <span class="spp-info-label">Programme</span>
+            <span class="spp-info-value">{{ spp_user_info.get('programCode', '—') }}</span>
+          </div>
+          <div class="spp-info-row">
+            <span class="spp-info-label">Batch</span>
+            <span class="spp-info-value">{{ spp_user_info.get('batchName', '—') }}</span>
+          </div>
+          <div class="spp-info-row">
+            <span class="spp-info-label">Email</span>
+            <span class="spp-info-value" style="font-size:.78rem">{{ spp_user_info.get('email', '—') }}</span>
+          </div>
+          {% if spp_user_info.get('courseCount') %}
+            <div class="spp-info-row">
+              <span class="spp-info-label">Core Courses</span>
+              <span class="spp-info-value">{{ spp_user_info.get('courseCount', {}).get('Core', '—') }}</span>
+            </div>
+            <div class="spp-info-row">
+              <span class="spp-info-label">Elective Courses</span>
+              <span class="spp-info-value">{{ spp_user_info.get('courseCount', {}).get('Elective', '—') }}</span>
+            </div>
+          {% endif %}
+        </div>
+      {% endif %}
 
       <!-- Sync banner -->
       {% if events %}
@@ -448,7 +637,13 @@
         <div class="empty" role="status">
           <div class="empty-icon">📅</div>
           <h2>No classes in the next 2 weeks</h2>
-          <p>Your TCS iON timetable shows no scheduled sessions for this period.</p>
+          <p>
+            {% if spp_ready %}
+              Your Salesforce SPP timetable shows no scheduled sessions for this period.
+            {% else %}
+              Your TCS iON timetable shows no scheduled sessions for this period.
+            {% endif %}
+          </p>
         </div>
       {% endif %}
 
@@ -478,6 +673,25 @@
     {% endif %}
     <!-- end steps -->
 
+    <!-- SPP Refresh Modal -->
+    <div class="refresh-modal-overlay" id="refreshModalOverlay" role="dialog" aria-modal="true" aria-labelledby="refreshModalTitle">
+      <div class="refresh-modal">
+        <h3 id="refreshModalTitle">🔒 Re-enter Password to Refresh</h3>
+        <p>Enter your Salesforce SPP password to fetch the latest timetable.</p>
+        <form method="post" action="{{ url_for('spp_preview') }}" onsubmit="startLoading(this, 'Refreshing timetable…')">
+          <div class="form-field">
+            <label for="spp_refresh_password">Password</label>
+            <input id="spp_refresh_password" name="spp_refresh_password" type="password"
+              autocomplete="current-password" placeholder="Your SPP password" required>
+          </div>
+          <div class="refresh-modal-btns">
+            <button type="button" class="btn btn-ghost btn-sm" onclick="closeRefreshModal()">Cancel</button>
+            <button type="submit" class="btn btn-primary btn-sm">Refresh →</button>
+          </div>
+        </form>
+      </div>
+    </div>
+
     <footer class="footer" style="text-align: center; margin-top: 48px; padding: 24px 0; border-top: 1px solid rgba(255,255,255,0.05); font-size: 12px; color: #6b7280;">
       <p>© 2026 Class Sync. All rights reserved.</p>
       <p style="margin-top: 8px; display: flex; justify-content: center; gap: 16px;">
@@ -490,18 +704,79 @@
   </div><!-- .page -->
 
   <script>
-    /* ── Password show / hide ──────────────────────────────── */
+    /* ── Password show / hide (TCS) ────────────────────────── */
     function togglePassword() {
       var input   = document.getElementById('password');
       var eyeOpen = document.getElementById('eyeOpen');
       var eyeOff  = document.getElementById('eyeOff');
       var btn     = document.getElementById('eyeToggle');
+      if (!input) return;
       var show    = input.type === 'password';
       input.type          = show ? 'text'    : 'password';
       eyeOpen.style.display = show ? 'none'  : '';
       eyeOff.style.display  = show ? ''      : 'none';
       btn.setAttribute('aria-label', show ? 'Hide password' : 'Show password');
     }
+
+    /* ── Password show / hide (SPP) ────────────────────────── */
+    function togglePasswordSpp() {
+      var input   = document.getElementById('spp_password');
+      var eyeOpen = document.getElementById('eyeOpenSpp');
+      var eyeOff  = document.getElementById('eyeOffSpp');
+      var btn     = document.getElementById('eyeToggleSpp');
+      if (!input) return;
+      var show    = input.type === 'password';
+      input.type            = show ? 'text'    : 'password';
+      eyeOpen.style.display = show ? 'none'  : '';
+      eyeOff.style.display  = show ? ''      : 'none';
+      btn.setAttribute('aria-label', show ? 'Hide password' : 'Show password');
+    }
+
+    /* ── Source tab switcher ───────────────────────────────── */
+    function selectSource(src) {
+      var tabTcs  = document.getElementById('tab-tcs');
+      var tabSpp  = document.getElementById('tab-spp');
+      var formTcs = document.getElementById('form-tcs');
+      var formSpp = document.getElementById('form-spp');
+      if (!tabTcs || !tabSpp) return;
+      if (src === 'spp') {
+        tabTcs.classList.remove('active'); tabTcs.setAttribute('aria-selected','false');
+        tabSpp.classList.add('active');    tabSpp.setAttribute('aria-selected','true');
+        formTcs.style.display = 'none';
+        formSpp.style.display = '';
+      } else {
+        tabSpp.classList.remove('active'); tabSpp.setAttribute('aria-selected','false');
+        tabTcs.classList.add('active');    tabTcs.setAttribute('aria-selected','true');
+        formSpp.style.display = 'none';
+        formTcs.style.display = '';
+      }
+      localStorage.setItem('selectedSource', src);
+    }
+
+    /* Restore last-selected source tab on page load */
+    window.addEventListener('DOMContentLoaded', function() {
+      var saved = localStorage.getItem('selectedSource');
+      if (saved === 'spp') selectSource('spp');
+    });
+
+    /* ── SPP Refresh Modal ─────────────────────────────────── */
+    function openRefreshModal() {
+      var overlay = document.getElementById('refreshModalOverlay');
+      if (overlay) overlay.classList.add('open');
+    }
+    function closeRefreshModal() {
+      var overlay = document.getElementById('refreshModalOverlay');
+      if (overlay) overlay.classList.remove('open');
+    }
+    /* Close modal on overlay click */
+    document.addEventListener('DOMContentLoaded', function() {
+      var overlay = document.getElementById('refreshModalOverlay');
+      if (overlay) {
+        overlay.addEventListener('click', function(e) {
+          if (e.target === overlay) closeRefreshModal();
+        });
+      }
+    });
 
     var quotes = [
       { text: "Time is the wisest counselor of all.", author: "Pericles" },
