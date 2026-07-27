@@ -6,6 +6,7 @@ from typing import Any
 from urllib.parse import parse_qs, urlparse
 
 from .models import CALENDAR_NAME
+from .spp import SPP_CALENDAR_NAME, SPP_CALENDAR_COLOR
 
 
 SCOPES = [
@@ -113,14 +114,15 @@ class GoogleCalendarClient:
             "email": email,
         }
 
-    def sync(self, event_payloads: list[dict]) -> SyncResult:
+    def sync(self, event_payloads: list[dict], source: str = "tcs") -> SyncResult:
         event_ids: dict[str, str] = {}
+        dry_run_cal_id = "dry-run-spp-timetable" if source == "spp" else "dry-run-spjimr-timetable"
         if self.dry_run:
             for event in event_payloads:
                 event_ids[event["uid"]] = (
                     event.get("synced_event_id") or f"dry-run-{abs(hash(event['uid']))}"
                 )
-            return SyncResult("dry-run-spjimr-timetable", True, len(event_payloads), True, event_ids)
+            return SyncResult(dry_run_cal_id, True, len(event_payloads), True, event_ids)
 
         # Short-circuit: nothing to sync, skip all API calls
         if not event_payloads:
@@ -139,7 +141,10 @@ class GoogleCalendarClient:
                 if k in {"token", "refresh_token", "token_uri", "client_id", "client_secret", "scopes"}
             })
         service = build("calendar", "v3", credentials=credentials)
-        calendar_id, created = self._ensure_calendar(service)
+        # Pick the correct calendar based on source
+        cal_name = SPP_CALENDAR_NAME if source == "spp" else CALENDAR_NAME
+        cal_color = SPP_CALENDAR_COLOR if source == "spp" else None
+        calendar_id, created = self._ensure_calendar(service, cal_name, cal_color)
 
         # 1. Build a map of expected incoming times for each (courseCode, sessionNumber)
         incoming_times_by_code_session: dict[tuple[str, str], set[str]] = {}
@@ -343,17 +348,54 @@ class GoogleCalendarClient:
             flow.oauth2session.state = state
         return flow
 
-    def _ensure_calendar(self, service: Any) -> tuple[str, bool]:
+    def _ensure_calendar(
+        self,
+        service: Any,
+        calendar_name: str = CALENDAR_NAME,
+        background_color: str | None = None,
+    ) -> tuple[str, bool]:
+        """Find or create a calendar with the given name.
+
+        If ``background_color`` is provided (hex string like ``#531f75``),
+        it is set on the calendarList entry (user-visible colour) when
+        the calendar already exists, and on creation for new calendars.
+        """
         page_token = None
         while True:
             result = service.calendarList().list(pageToken=page_token).execute()
-            for calendar in result.get("items", []):
-                if calendar.get("summary") == CALENDAR_NAME:
-                    return calendar["id"], False
+            for cal in result.get("items", []):
+                if cal.get("summary") == calendar_name:
+                    # Optionally update the colour if not already set correctly
+                    if background_color and cal.get("backgroundColor") != background_color:
+                        try:
+                            service.calendarList().patch(
+                                calendarId=cal["id"],
+                                colorRgbFormat=True,
+                                body={
+                                    "backgroundColor": background_color,
+                                    "foregroundColor": "#ffffff",
+                                },
+                            ).execute()
+                        except Exception:
+                            pass  # colour patch is best-effort
+                    return cal["id"], False
             page_token = result.get("nextPageToken")
             if not page_token:
                 break
-        calendar = service.calendars().insert(
-            body={"summary": CALENDAR_NAME, "timeZone": "Asia/Kolkata"}
-        ).execute()
+        # Create the calendar
+        create_body: dict = {"summary": calendar_name, "timeZone": "Asia/Kolkata"}
+        calendar = service.calendars().insert(body=create_body).execute()
+        # Set colour on the calendarList entry (not on the calendar object itself)
+        if background_color:
+            try:
+                service.calendarList().patch(
+                    calendarId=calendar["id"],
+                    colorRgbFormat=True,
+                    body={
+                        "backgroundColor": background_color,
+                        "foregroundColor": "#ffffff",
+                    },
+                ).execute()
+            except Exception:
+                pass
         return calendar["id"], True
