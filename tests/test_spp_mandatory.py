@@ -78,3 +78,27 @@ def test_wisenet_extracts_course_name_from_pdf():
         info = parse_mandatory_sessions_from_pdf(b"dummy pdf bytes", "FIN521")
         assert info.course_code == "FIN521"
         assert info.course_name == "Management Control System"
+
+
+def test_spp_classroom_extraction_and_payload():
+    from class_sync.spp import spp_google_payload
+    raw_sessions = [
+        {
+            "id": "sess-2",
+            "courseName": "Corporate Finance",
+            "sessionDate": "2026-07-28",
+            "startTime": "2:00PM",
+            "endTime": "3:15PM",
+            "courseActivity": "Session",
+            "instructorNames": "Prof. Jones",
+            "title": "5",
+            "classroom": "Lab 3B",
+        }
+    ]
+    events = parse_spp_sessions(raw_sessions)
+    assert len(events) == 1
+    e = events[0]
+    assert e.classroom == "Lab 3B"
+
+    payload = spp_google_payload(e)
+    assert payload.get("location") == "Lab 3B"
