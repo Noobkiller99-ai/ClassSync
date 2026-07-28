@@ -5,7 +5,7 @@ from dataclasses import dataclass
 from typing import Any
 from urllib.parse import parse_qs, urlparse
 
-from .models import CALENDAR_NAME
+from .models import CALENDAR_NAME, CALENDAR_COLOR
 from .spp import SPP_CALENDAR_NAME, SPP_CALENDAR_COLOR
 
 
@@ -141,9 +141,9 @@ class GoogleCalendarClient:
                 if k in {"token", "refresh_token", "token_uri", "client_id", "client_secret", "scopes"}
             })
         service = build("calendar", "v3", credentials=credentials)
-        # Pick the correct calendar based on source
+        # Pick the correct calendar and colour based on source
         cal_name = SPP_CALENDAR_NAME if source == "spp" else CALENDAR_NAME
-        cal_color = SPP_CALENDAR_COLOR if source == "spp" else None
+        cal_color = SPP_CALENDAR_COLOR if source == "spp" else CALENDAR_COLOR
         calendar_id, created = self._ensure_calendar(service, cal_name, cal_color)
 
         # 1. Build a map of expected incoming times for each (courseCode, sessionNumber)
@@ -352,7 +352,7 @@ class GoogleCalendarClient:
         self,
         service: Any,
         calendar_name: str = CALENDAR_NAME,
-        background_color: str | None = None,
+        background_color: str | None = CALENDAR_COLOR,
     ) -> tuple[str, bool]:
         """Find or create a calendar with the given name.
 
