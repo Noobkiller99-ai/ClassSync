@@ -283,45 +283,36 @@ class GoogleCalendarClient:
             payload_sess = private_props.get("sessionNumber", "").strip()
             starts_at_iso = event["start"]["dateTime"][:19]
 
-            # Rule: If the existing event matches course code, session number, and time,
-            # SKIP and do not create or update any event.
-            if payload_code and payload_sess:
+            # Find existing Google event ID by code+session, title+time, or uid
+            existing_id = google_id
+            if not existing_id and payload_code and payload_sess:
                 time_key = (payload_code, payload_sess, starts_at_iso)
                 if time_key in existing_by_code_session_time:
-                    event_ids[uid] = existing_by_code_session_time[time_key]
-                    # Skip completely (no write API call)
-                    continue
+                    existing_id = existing_by_code_session_time[time_key]
 
-            # Fallback duplicate prevention (using title/time)
-            fallback_id = None
-            norm_title = event["summary"].replace("🔴 MANDATORY: ", "").replace("📝 EVALUATION: ", "").replace("🔴 MANDATORY EVALUATION: ", "").strip()
-            if (norm_title, starts_at_iso) in existing_by_time_title:
-                fallback_id = existing_by_time_title[(norm_title, starts_at_iso)]
-            elif uid in existing_by_uid:
-                fallback_id = existing_by_uid[uid]
+            if not existing_id:
+                norm_title = event["summary"].replace("🔴 MANDATORY: ", "").replace("📝 EVALUATION: ", "").replace("🔴 MANDATORY EVALUATION: ", "").strip()
+                if (norm_title, starts_at_iso) in existing_by_time_title:
+                    existing_id = existing_by_time_title[(norm_title, starts_at_iso)]
+                elif uid in existing_by_uid:
+                    existing_id = existing_by_uid[uid]
 
-            if fallback_id:
-                event_ids[uid] = fallback_id
-                # Skip completely (no write API call)
-                continue
-
-            if google_id:
+            if existing_id:
                 try:
-                    service.events().update(
-                        calendarId=calendar_id, eventId=google_id, body=body
+                    service.events().patch(
+                        calendarId=calendar_id, eventId=existing_id, body=body
                     ).execute()
+                    event_ids[uid] = existing_id
                 except Exception:
-                    # Event may have been deleted manually on Google Calendar; re-insert it.
                     created_event = service.events().insert(
                         calendarId=calendar_id, body=body
                     ).execute()
-                    google_id = created_event["id"]
+                    event_ids[uid] = created_event["id"]
             else:
                 created_event = service.events().insert(
                     calendarId=calendar_id, body=body
                 ).execute()
-                google_id = created_event["id"]
-            event_ids[uid] = google_id
+                event_ids[uid] = created_event["id"]
             imported += 1
         return SyncResult(calendar_id, created, imported, False, event_ids)
 

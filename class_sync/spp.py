@@ -582,7 +582,7 @@ class SppClient:
         email: str,
         password: str,
         now: datetime | None = None,
-        enrich_details: bool = False,
+        enrich_details: bool = True,
     ) -> tuple[list[TimetableEvent], dict]:
         """
         High-level entry point: login → fetch sessions → enrich → parse.
