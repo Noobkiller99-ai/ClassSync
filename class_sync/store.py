@@ -129,12 +129,30 @@ def init_db(path: str | Path) -> None:
             CREATE TABLE IF NOT EXISTS mandatory_sessions (
                 batch        TEXT NOT NULL,
                 course_code  TEXT NOT NULL,
+                course_name  TEXT DEFAULT '',
                 session_nums TEXT NOT NULL,
                 updated_at   TEXT NOT NULL,
                 PRIMARY KEY (batch, course_code)
             );
             """,
         )
+
+        # Migrate course_name column if missing
+        try:
+            if DATABASE_URL:
+                with conn.cursor() as cur: # type: ignore[attr-defined]
+                    cur.execute(
+                        "SELECT 1 FROM information_schema.columns "
+                        "WHERE table_name = 'mandatory_sessions' AND column_name = 'course_name'"
+                    )
+                    if not cur.fetchone():
+                        cur.execute("ALTER TABLE mandatory_sessions ADD COLUMN course_name TEXT DEFAULT ''")
+            else:
+                cols = [row[1] for row in conn.execute("PRAGMA table_info(mandatory_sessions)").fetchall()] # type: ignore[attr-defined]
+                if cols and "course_name" not in cols:
+                    conn.execute("ALTER TABLE mandatory_sessions ADD COLUMN course_name TEXT DEFAULT ''") # type: ignore[attr-defined]
+        except Exception:
+            pass
 
 
 # ── Settings ───────────────────────────────────────────────────────────────
@@ -224,34 +242,95 @@ def mark_many_synced(path: str | Path, user_token: str, event_ids: dict[str, str
 
 # ── Mandatory sessions ─────────────────────────────────────────────────────────
 
+def check_is_mandatory(
+    course_code: str,
+    subject_name: str,
+    session_number: str,
+    mandatory_data: dict[str, Any],
+) -> bool:
+    """
+    Check if a given session is marked mandatory in mandatory_data.
+    Supports matching by course_code and by course_name / subject_name.
+    """
+    if not session_number or not mandatory_data:
+        return False
+
+    try:
+        sess_int = int(session_number)
+    except ValueError:
+        return False
+
+    code_clean = (course_code or "").split("-")[0].strip().upper()
+    subject_clean = (subject_name or "").strip().lower()
+
+    for outline_code, info in mandatory_data.items():
+        if isinstance(info, dict):
+            mandatory_nums = info.get("sessions", [])
+            outline_name = (info.get("course_name") or "").strip().lower()
+        else:
+            mandatory_nums = info
+            outline_name = ""
+
+        if sess_int not in mandatory_nums:
+            continue
+
+        outline_code_clean = outline_code.strip().upper()
+
+        # Match 1: Course code matches directly
+        if code_clean and code_clean == outline_code_clean:
+            return True
+
+        # Match 2: Course code appears in subject_name
+        if outline_code_clean and outline_code_clean in subject_clean.upper():
+            return True
+
+        # Match 3: Course name matches subject_name
+        if outline_name:
+            if outline_name == subject_clean or outline_name in subject_clean or subject_clean in outline_name:
+                return True
+
+    return False
+
+
 def save_mandatory_sessions(
-    path: str | Path, batch: str, mandatory_sessions: dict[str, list[int]]
+    path: str | Path, batch: str, mandatory_sessions: dict[str, Any]
 ) -> None:
-    """Persist mandatory session data centrally for a batch: (batch, course_code) → list of session numbers."""
+    """Persist mandatory session data centrally for a batch: (batch, course_code) → session data."""
     now = datetime.now(UTC).isoformat()
     with connect(path) as conn:
-        for course_code, session_nums in mandatory_sessions.items():
+        for course_code, data in mandatory_sessions.items():
+            if isinstance(data, dict):
+                session_nums = data.get("sessions", [])
+                course_name = data.get("course_name", "")
+            else:
+                session_nums = data
+                course_name = ""
             _execute(
                 conn,
-                "INSERT INTO mandatory_sessions(batch, course_code, session_nums, updated_at) "
-                "VALUES(?, ?, ?, ?) "
+                "INSERT INTO mandatory_sessions(batch, course_code, course_name, session_nums, updated_at) "
+                "VALUES(?, ?, ?, ?, ?) "
                 "ON CONFLICT(batch, course_code) DO UPDATE SET "
-                "session_nums = excluded.session_nums, updated_at = excluded.updated_at",
-                (batch, course_code, json.dumps(session_nums), now),
+                "course_name = excluded.course_name, session_nums = excluded.session_nums, updated_at = excluded.updated_at",
+                (batch, course_code, course_name, json.dumps(session_nums), now),
             )
 
 
-def get_mandatory_sessions(path: str | Path, batch: str) -> dict[str, list[int]]:
-    """Load mandatory session data centrally for a batch as course_code → list[int]."""
-    res: dict[str, list[int]] = {}
+def get_mandatory_sessions(path: str | Path, batch: str) -> dict[str, dict]:
+    """Load mandatory session data centrally for a batch as course_code → {'sessions': list[int], 'course_name': str}."""
+    res: dict[str, dict] = {}
     with connect(path) as conn:
         rows = _execute(
             conn,
-            "SELECT course_code, session_nums FROM mandatory_sessions WHERE batch = ? ORDER BY updated_at ASC",
+            "SELECT course_code, course_name, session_nums FROM mandatory_sessions WHERE batch = ? ORDER BY updated_at ASC",
             (batch,),
         ).fetchall() # type: ignore[attr-defined]
         for row in rows:
-            res[row["course_code"]] = json.loads(row["session_nums"])
+            keys = row.keys() if hasattr(row, "keys") else []
+            c_name = row["course_name"] if "course_name" in keys else ""
+            res[row["course_code"]] = {
+                "sessions": json.loads(row["session_nums"]),
+                "course_name": c_name or "",
+            }
     return res
 
 
@@ -328,14 +407,12 @@ def reapply_mandatory_flags_to_batch(
                 any_changed = False
                 
                 for e in events_raw:
-                    code = (e.get("course_code") or "").split("-")[0].strip().upper()
+                    code = e.get("course_code", "")
+                    subject = e.get("title", "").replace("🔴 MANDATORY: ", "").replace("🔴 MANDATORY ", "")
                     sess = e.get("session_number", "")
-                    is_mandatory = False
-                    if code in mandatory_data and sess:
-                        try:
-                            is_mandatory = int(sess) in mandatory_data[code]
-                        except ValueError:
-                            pass
+                    source = e.get("source", "")
+
+                    is_mandatory = check_is_mandatory(code, subject, sess, mandatory_data)
                             
                     old_mandatory = e.get("mandatory", False)
                     if old_mandatory != is_mandatory:
@@ -343,7 +420,6 @@ def reapply_mandatory_flags_to_batch(
                         
                     e_updated = dict(e)
                     e_updated["mandatory"] = is_mandatory
-                    subject = e.get("title", "").replace("🔴 MANDATORY: ", "")
                     if is_mandatory:
                         e_updated["title"] = f"🔴 MANDATORY: {subject}"
                     else:
@@ -356,7 +432,7 @@ def reapply_mandatory_flags_to_batch(
                     ev_obj = TimetableEvent(
                         uid=e["uid"],
                         subject_name=subject,
-                        course_code=e.get("course_code", ""),
+                        course_code=code,
                         faculty=e.get("faculty", ""),
                         classroom=e.get("classroom", ""),
                         starts_at=starts_at,
@@ -366,8 +442,13 @@ def reapply_mandatory_flags_to_batch(
                         session_number=sess,
                         activity_name=e.get("activity_name", ""),
                     )
+                    if source == "SPJIMR SPP":
+                        from .spp import spp_google_payload
+                        payload_data = spp_google_payload(ev_obj)
+                    else:
+                        payload_data = ev_obj.google_payload()
                     timetable_events_list.append(
-                        (user_token, e["uid"], json.dumps(ev_obj.google_payload()), now)
+                        (user_token, e["uid"], json.dumps(payload_data), now)
                     )
                 
                 if any_changed:

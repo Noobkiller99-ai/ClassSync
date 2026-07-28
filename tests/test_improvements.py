@@ -1439,7 +1439,7 @@ def test_web_upload_merges_mandatory_sessions(tmp_path):
     # Check that database contains the merged list
     sessions = get_mandatory_sessions(db, "general")
     assert "FIN561" in sessions
-    assert sessions["FIN561"] == [1, 2, 3, 4]
+    assert sessions["FIN561"]["sessions"] == [1, 2, 3, 4]
 
 
 def test_reapply_mandatory_flags_to_batch(tmp_path):

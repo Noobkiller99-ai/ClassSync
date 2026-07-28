@@ -101,7 +101,15 @@ def parse_spp_sessions(
         end_time     = (item.get("endTime") or "").strip()       # "10:10AM"
         activity     = (item.get("courseActivity") or "").strip()
         instructor   = (item.get("instructorNames") or "").strip()
-        title_raw    = (item.get("title") or "").strip()         # session number like "17"
+        title_raw    = (
+            item.get("title")
+            or item.get("sessionNo")
+            or item.get("sessionNumber")
+            or item.get("session_no")
+            or item.get("session")
+            or item.get("name")
+            or ""
+        ).strip()         # session number like "17"
 
         if not (course_name and session_date and start_time and end_time):
             continue
@@ -131,6 +139,10 @@ def parse_spp_sessions(
         # Build a stable UID using SPP session ID (most reliable) or fallback
         uid = session_id or f"{session_date}|{start_time}|{course_name}"
 
+        # Extract clean numeric session number (e.g. "Session 17" or "17" -> "17")
+        num_m = re.search(r"\d+", title_raw)
+        session_num = num_m.group(0) if num_m else title_raw
+
         events.append(
             TimetableEvent(
                 uid=uid,
@@ -142,7 +154,7 @@ def parse_spp_sessions(
                 ends_at=ends_at,
                 status="",               # Attendance status not available in schedule view
                 mandatory=False,
-                session_number=title_raw,
+                session_number=session_num,
                 activity_name=activity,
             )
         )

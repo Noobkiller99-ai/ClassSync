@@ -16,6 +16,7 @@ class MandatorySessionInfo:
     course_shortname: str
     mandatory_sessions: list[int]  # list of session numbers (ints)
     all_sessions: list[int] = field(default_factory=list)
+    course_name: str = ""
 
 
 def parse_mandatory_sessions_from_pdf(pdf_bytes: bytes, course_shortname: str) -> MandatorySessionInfo:
@@ -44,6 +45,7 @@ def parse_mandatory_sessions_from_pdf(pdf_bytes: bytes, course_shortname: str) -
     course_code = course_shortname.split("-")[0].strip().upper()
     mandatory: list[int] = []
     all_sessions_found: list[int] = []
+    extracted_course_name: str = ""
 
     # Global column config discovered from header row
     mandatory_col_idx: int | None = None
@@ -51,6 +53,15 @@ def parse_mandatory_sessions_from_pdf(pdf_bytes: bytes, course_shortname: str) -
     in_session_table = False  # True once we've found the session plan table
 
     with pdfplumber.open(io.BytesIO(pdf_bytes)) as pdf:
+        # Extract course name from page 1 text
+        if pdf.pages:
+            p1_text = pdf.pages[0].extract_text() or ""
+            m_name = re.search(r'Course\s+(?:Name|Title)\s*[:|-]?\s*([^\n\r]+)', p1_text, re.I)
+            if m_name:
+                raw_name = m_name.group(1).strip()
+                cleaned_name = re.sub(r'\s*(?:Credits|Course Code|Term|Instructor|No\. of|Session).*$', '', raw_name, flags=re.I).strip()
+                if cleaned_name and len(cleaned_name) > 2:
+                    extracted_course_name = cleaned_name
         for page in pdf.pages:
             tables = page.extract_tables()
             for table in tables:
@@ -184,6 +195,7 @@ def parse_mandatory_sessions_from_pdf(pdf_bytes: bytes, course_shortname: str) -
         course_shortname=course_shortname,
         mandatory_sessions=mandatory,
         all_sessions=all_sessions_found,
+        course_name=extracted_course_name,
     )
 
 
