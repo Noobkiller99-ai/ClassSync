@@ -605,7 +605,10 @@
                   {% set cidx = ((event.title | length) + (event.course_code | length)) % (chip_colors | length) %}
                   <article class="event-card {{ 'mandatory-card' if event.mandatory else '' }}" style="--chip: {{ chip_colors[cidx] }}">
                     <div class="event-time">
-                      {{ event.starts_at[11:16] }} – {{ event.ends_at[11:16] }}
+                      <span>{{ event.starts_at[11:16] }} – {{ event.ends_at[11:16] }}</span>
+                      {% if event.session_number %}
+                        <span class="session-badge" style="float: right; font-size: 0.75rem; background: rgba(255,255,255,0.08); padding: 2px 8px; border-radius: 12px; color: var(--text-dim); font-weight: 600;">Session {{ event.session_number }}</span>
+                      {% endif %}
                     </div>
                     <div class="event-title">
                       {{ event.title }}
@@ -614,6 +617,12 @@
                       {% endif %}
                     </div>
                     <div class="event-meta">
+                      {% if event.session_number %}
+                        <div class="meta-row">
+                          <span class="meta-key">Session</span>
+                          <span class="meta-val">Session {{ event.session_number }}</span>
+                        </div>
+                      {% endif %}
                       {% if event.faculty %}
                         <div class="meta-row">
                           <span class="meta-key">Faculty</span>

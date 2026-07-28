@@ -101,7 +101,15 @@ def parse_spp_sessions(
         end_time     = (item.get("endTime") or "").strip()       # "10:10AM"
         activity     = (item.get("courseActivity") or "").strip()
         instructor   = (item.get("instructorNames") or "").strip()
-        title_raw    = (item.get("title") or "").strip()         # session number like "17"
+        title_raw    = (
+            item.get("title")
+            or item.get("sessionNo")
+            or item.get("sessionNumber")
+            or item.get("session_no")
+            or item.get("session")
+            or item.get("name")
+            or ""
+        ).strip()         # session number like "17"
 
         if not (course_name and session_date and start_time and end_time):
             continue
