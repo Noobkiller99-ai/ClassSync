@@ -87,6 +87,8 @@ class TimetableEvent:
                 }
             },
         }
+        if self.classroom:
+            payload["location"] = self.classroom
         if self.mandatory:
             payload["colorId"] = MANDATORY_COLOR_ID
         elif self.is_evaluation:

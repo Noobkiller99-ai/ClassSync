@@ -365,8 +365,8 @@ class GoogleCalendarClient:
             result = service.calendarList().list(pageToken=page_token).execute()
             for cal in result.get("items", []):
                 if cal.get("summary") == calendar_name:
-                    # Optionally update the colour if not already set correctly
-                    if background_color and cal.get("backgroundColor") != background_color:
+                    # Ensure the background colour and foreground (white text) are set correctly
+                    if background_color and (cal.get("backgroundColor") != background_color or cal.get("foregroundColor") != "#ffffff"):
                         try:
                             service.calendarList().patch(
                                 calendarId=cal["id"],

@@ -120,12 +120,26 @@ def parse_spp_sessions(
         except ValueError:
             continue
 
-        # Enrich with session detail if available
-        location    = ""
-        description = ""
+        # Extract classroom / location from session item or details_map
+        location = (
+            item.get("classroom")
+            or item.get("location")
+            or item.get("room")
+            or item.get("venue")
+            or item.get("building")
+            or item.get("roomNo")
+            or item.get("roomName")
+            or item.get("classroomName")
+            or item.get("locationName")
+            or item.get("venueName")
+            or ""
+        ).strip()
+
         if details_map and session_id in details_map:
             det = details_map[session_id]
-            location    = (det.get("location") or "").strip()
+            det_loc = (det.get("location") or det.get("classroom") or det.get("room") or "").strip()
+            if det_loc:
+                location = det_loc
             description = (det.get("description") or "").strip()
             if description.lower() in {"not given", "n/a", "-"}:
                 description = ""
@@ -662,8 +676,8 @@ def spp_google_payload(event: TimetableEvent) -> dict:
             }
         },
     }
-    # Colour: mandatory → red (11), exam → orange (6), else no colorId
-    # (the calendar itself has the SPJIMR purple colour set at creation time)
+    if event.classroom:
+        payload["location"] = event.classroom
     if event.mandatory:
         payload["colorId"] = "11"   # Tomato / Red
     elif is_exam:
