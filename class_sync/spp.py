@@ -101,7 +101,15 @@ def parse_spp_sessions(
         end_time     = (item.get("endTime") or "").strip()       # "10:10AM"
         activity     = (item.get("courseActivity") or "").strip()
         instructor   = (item.get("instructorNames") or "").strip()
-        title_raw    = (item.get("title") or "").strip()         # session number like "17"
+        title_raw    = (
+            item.get("title")
+            or item.get("sessionNo")
+            or item.get("sessionNumber")
+            or item.get("session_no")
+            or item.get("session")
+            or item.get("name")
+            or ""
+        ).strip()         # session number like "17"
 
         if not (course_name and session_date and start_time and end_time):
             continue
@@ -112,18 +120,37 @@ def parse_spp_sessions(
         except ValueError:
             continue
 
-        # Enrich with session detail if available
-        location    = ""
+        # Extract classroom / location from session item or details_map
+        location = (
+            item.get("classroom")
+            or item.get("location")
+            or item.get("room")
+            or item.get("venue")
+            or item.get("building")
+            or item.get("roomNo")
+            or item.get("roomName")
+            or item.get("classroomName")
+            or item.get("locationName")
+            or item.get("venueName")
+            or ""
+        ).strip()
+
         description = ""
         if details_map and session_id in details_map:
             det = details_map[session_id]
-            location    = (det.get("location") or "").strip()
+            det_loc = (det.get("location") or det.get("classroom") or det.get("room") or "").strip()
+            if det_loc:
+                location = det_loc
             description = (det.get("description") or "").strip()
             if description.lower() in {"not given", "n/a", "-"}:
                 description = ""
 
+        # Extract clean numeric session number (e.g. "Session 17" or "17" -> "17")
+        num_m = re.search(r"\d+", title_raw)
+        session_num = num_m.group(0) if num_m else title_raw
+
         # Deduplicate
-        dedup_key = (starts_at, ends_at, course_name.lower(), title_raw.lower())
+        dedup_key = (starts_at, ends_at, course_name.lower(), session_num.lower())
         if dedup_key in seen:
             continue
         seen.add(dedup_key)
@@ -142,7 +169,7 @@ def parse_spp_sessions(
                 ends_at=ends_at,
                 status="",               # Attendance status not available in schedule view
                 mandatory=False,
-                session_number=title_raw,
+                session_number=session_num,
                 activity_name=activity,
             )
         )
@@ -556,7 +583,7 @@ class SppClient:
         email: str,
         password: str,
         now: datetime | None = None,
-        enrich_details: bool = False,
+        enrich_details: bool = True,
     ) -> tuple[list[TimetableEvent], dict]:
         """
         High-level entry point: login → fetch sessions → enrich → parse.
@@ -652,6 +679,8 @@ def spp_google_payload(event: TimetableEvent) -> dict:
     }
     # Colour: mandatory → red (11), exam → orange (6), else no colorId
     # (the calendar itself has the SPJIMR purple colour set at creation time)
+    if event.classroom:
+        payload["location"] = event.classroom
     if event.mandatory:
         payload["colorId"] = "11"   # Tomato / Red
     elif is_exam:

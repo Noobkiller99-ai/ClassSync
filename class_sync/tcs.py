@@ -125,31 +125,15 @@ def parse_tcs_attendance(payload: str | list[dict]) -> list[TimetableEvent]:
 
 def apply_mandatory_flags(
     events: list[TimetableEvent],
-    mandatory_sessions: dict[str, list[int]],
+    mandatory_sessions: dict[str, Any],
 ) -> list[TimetableEvent]:
-    """
-    Return a new list of events with the mandatory flag set where appropriate.
-
-    Args:
-        events: list of TimetableEvent (from TCS iON)
-        mandatory_sessions: dict mapping course_code → list of mandatory session numbers
-                            (from Wisenet PDF parsing)
-    """
+    from .store import check_is_mandatory
     result = []
     for event in events:
-        # Normalise course code for lookup
-        # TCS code may be "FIN521-PDM-46" or "FIN521"; Wisenet key is "FIN521"
-        code = event.course_code.split("-")[0].strip().upper()
-        mandatory_nums = mandatory_sessions.get(code, [])
-        is_mandatory = False
-        if mandatory_nums and event.session_number:
-            try:
-                sess_int = int(event.session_number)
-                is_mandatory = sess_int in mandatory_nums
-            except ValueError:
-                pass
-        if is_mandatory and not event.mandatory:
-            # Create a new frozen event with mandatory=True
+        is_mandatory = check_is_mandatory(
+            event.course_code, event.subject_name, event.session_number, mandatory_sessions
+        )
+        if is_mandatory != event.mandatory:
             event = TimetableEvent(
                 uid=event.uid,
                 subject_name=event.subject_name,
@@ -159,7 +143,7 @@ def apply_mandatory_flags(
                 starts_at=event.starts_at,
                 ends_at=event.ends_at,
                 status=event.status,
-                mandatory=True,
+                mandatory=is_mandatory,
                 session_number=event.session_number,
                 activity_name=event.activity_name,
             )

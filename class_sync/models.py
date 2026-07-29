@@ -6,6 +6,7 @@ from datetime import datetime, timedelta
 
 TIMEZONE = "Asia/Kolkata"
 CALENDAR_NAME = "SPJIMR Timetable"
+CALENDAR_COLOR = "#531f75"
 DEFAULT_REMINDER_MINUTES = 15
 SOURCE = "TCS iON"
 SYNC_WINDOW_DAYS = 14
@@ -86,6 +87,8 @@ class TimetableEvent:
                 }
             },
         }
+        if self.classroom:
+            payload["location"] = self.classroom
         if self.mandatory:
             payload["colorId"] = MANDATORY_COLOR_ID
         elif self.is_evaluation:
