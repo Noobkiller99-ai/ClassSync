@@ -58,6 +58,23 @@ from .spp import (
 )
 
 
+class VercelPathMiddleware:
+    def __init__(self, wsgi_app):
+        self.wsgi_app = wsgi_app
+
+    def __call__(self, environ, start_response):
+        path = environ.get("PATH_INFO", "")
+        # Strip '/api/index.py' or '/api/index' from the start of the path
+        for prefix in ["/api/index.py", "/api/index"]:
+            if path.startswith(prefix):
+                path = path[len(prefix):]
+                break
+        if not path.startswith("/"):
+            path = "/" + path
+        environ["PATH_INFO"] = path
+        return self.wsgi_app(environ, start_response)
+
+
 def create_app(test_config: dict | None = None) -> Flask:
     # True when running locally (not on Render or Vercel, or any cloud with RENDER or VERCEL env set)
     IS_LOCAL = not (os.getenv("RENDER") or os.getenv("VERCEL"))
@@ -66,6 +83,7 @@ def create_app(test_config: dict | None = None) -> Flask:
     # Respect X-Forwarded-Proto from Render/any reverse proxy so OAuth
     # callback URLs are built with https:// in production.
     app.wsgi_app = ProxyFix(app.wsgi_app, x_proto=1, x_host=1)
+    app.wsgi_app = VercelPathMiddleware(app.wsgi_app)
     app.config.from_mapping(
         SECRET_KEY=os.getenv("SECRET_KEY", "dev-secret-change-me"),
         DATABASE=str(database_path(app.instance_path)),
