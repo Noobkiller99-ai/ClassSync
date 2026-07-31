@@ -102,16 +102,33 @@ def parse_mandatory_sessions_from_pdf(pdf_bytes: bytes, course_shortname: str) -
                                 local_mandatory_col = ci
                                 in_session_table = True
                                 break
-                        # Session numbers always appear in col 0 in SPJIMR course outlines
-                        # (the header for that col is empty or has "Session No &")
-                        local_session_col = 0
+                        
+                        # Dynamically detect which column contains the session numbers (usually col 0 or col 1)
+                        # We count how many rows have a short session-like string with digits in col 0 vs col 1
+                        col0_score = 0
+                        col1_score = 0
+                        for r in table[row_idx + 1:]:
+                            if len(r) > 0:
+                                val0 = str(r[0] or "").strip()
+                                if val0 and re.search(r"\d", val0) and len(val0) < 20:
+                                    col0_score += 1
+                            if len(r) > 1:
+                                val1 = str(r[1] or "").strip()
+                                if val1 and re.search(r"\d", val1) and len(val1) < 20:
+                                    col1_score += 1
+                        
+                        if col1_score > col0_score:
+                            local_session_col = 1
+                        else:
+                            local_session_col = 0
+
                         # Store globally for subsequent pages
                         mandatory_col_idx = local_mandatory_col
                         session_col_idx = local_session_col
                         data_start_row = row_idx + 1
-                        # Skip over sub-header/merged header rows (rows with no digit in col 0)
+                        # Skip over sub-header/merged header rows (rows with no digit in the session col)
                         while data_start_row < len(table):
-                            first_cell = str(table[data_start_row][0] or "").strip()
+                            first_cell = str(table[data_start_row][local_session_col] or "").strip()
                             if re.search(r"\d", first_cell):
                                 break
                             data_start_row += 1
@@ -122,8 +139,8 @@ def parse_mandatory_sessions_from_pdf(pdf_bytes: bytes, course_shortname: str) -
                     if not in_session_table:
                         continue
                     # For continuation pages: use first col as session, last col as mandatory
-                    local_session_col = 0
-                    local_mandatory_col = len(table[0]) - 1
+                    local_session_col = session_col_idx if session_col_idx is not None else 0
+                    local_mandatory_col = mandatory_col_idx if mandatory_col_idx is not None else (len(table[0]) - 1)
                     data_start_row = 0
 
                 # ── Step 2: parse data rows ────────────────────────────────
@@ -138,7 +155,8 @@ def parse_mandatory_sessions_from_pdf(pdf_bytes: bytes, course_shortname: str) -
                         if len(cells) < 2:
                             continue
                         local_mandatory_col = len(cells) - 1
-                        local_session_col = 0
+                        if local_session_col >= len(cells):
+                            local_session_col = 0
 
                     session_cell = cells[local_session_col].strip()
                     
@@ -200,5 +218,18 @@ def parse_mandatory_sessions_from_pdf(pdf_bytes: bytes, course_shortname: str) -
 
 
 def _parse_session_nums(text: str) -> list[int]:
-    """Extract all integers from a string like '1, 2' or '9, 10, 11' or 'Session 9 - Yes'."""
-    return [int(m) for m in re.findall(r"\d+", text)]
+    """Extract all integers from a string, expanding ranges like '1-2' or '7-9' or '14 to 16'."""
+    nums = set()
+    ranges = re.findall(r"(\d+)\s*(?:-|to)\s*(\d+)", text, re.IGNORECASE)
+    for start, end in ranges:
+        s, e = int(start), int(end)
+        if s <= e:
+            nums.update(range(s, e + 1))
+        else:
+            nums.update(range(e, s + 1))
+    
+    standalone = re.findall(r"\d+", text)
+    for num_str in standalone:
+        nums.add(int(num_str))
+        
+    return sorted(list(nums))
