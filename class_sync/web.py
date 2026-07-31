@@ -131,6 +131,67 @@ def create_app(test_config: dict | None = None) -> Flask:
         spp_ready = (source == "spp")
         batch = _get_user_batch(app, tok)
         mandatory_data = get_mandatory_sessions(db, batch)
+
+        # Dynamically apply/re-apply mandatory flags to preview events on page load
+        if events_raw:
+            from .models import TimetableEvent
+            timetable_events = []
+            for e in events_raw:
+                try:
+                    clean_subject = e.get("title", "")
+                    for prefix in ["🔴 MANDATORY EVALUATION: ", "🔴 MANDATORY: ", "🔴 MANDATORY ", "📝 EVALUATION: "]:
+                        if clean_subject.startswith(prefix):
+                            clean_subject = clean_subject[len(prefix):]
+                    
+                    starts_at = e["starts_at"]
+                    if isinstance(starts_at, str):
+                        starts_at = datetime.fromisoformat(starts_at)
+                    ends_at = e["ends_at"]
+                    if isinstance(ends_at, str):
+                        ends_at = datetime.fromisoformat(ends_at)
+                        
+                    timetable_events.append(
+                        TimetableEvent(
+                            uid=e["uid"],
+                            subject_name=clean_subject,
+                            course_code=e.get("course_code", ""),
+                            faculty=e.get("faculty", ""),
+                            classroom=e.get("classroom", ""),
+                            starts_at=starts_at,
+                            ends_at=ends_at,
+                            status=e.get("status", ""),
+                            mandatory=e.get("mandatory", False),
+                            session_number=e.get("session_number", ""),
+                            activity_name=e.get("activity_name", ""),
+                        )
+                    )
+                except Exception:
+                    continue
+            
+            timetable_events = apply_mandatory_flags(timetable_events, mandatory_data)
+            
+            serialized_list = []
+            for ev in timetable_events:
+                serialized_item = {
+                    "uid": ev.uid,
+                    "title": ev.title,
+                    "course_code": ev.course_code,
+                    "faculty": ev.faculty,
+                    "classroom": ev.classroom,
+                    "starts_at": ev.starts_at.isoformat(),
+                    "ends_at": ev.ends_at.isoformat(),
+                    "status": ev.status,
+                    "description": ev.description,
+                    "mandatory": ev.mandatory,
+                    "session_number": ev.session_number,
+                    "activity_name": ev.activity_name,
+                }
+                orig_e = next((o for o in events_raw if o.get("uid") == ev.uid), None)
+                if orig_e and "source" in orig_e:
+                    serialized_item["source"] = orig_e["source"]
+                serialized_list.append(serialized_item)
+            events_raw = serialized_list
+
         synced = bool(
             google_ready
             and any(e.get("synced_event_id") for e in list_event_payloads(db, tok))

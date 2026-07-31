@@ -102,3 +102,25 @@ def test_spp_classroom_extraction_and_payload():
 
     payload = spp_google_payload(e)
     assert payload.get("location") == "Lab 3B"
+
+
+def test_check_is_mandatory_substring_matching():
+    mandatory_data = {
+        "STR520": {
+            "sessions": [3, 4],
+            "course_name": "Business & Society",
+        },
+        "STR544": {
+            "sessions": [3, 4],
+            "course_name": "Business Consulting",
+        }
+    }
+
+    # Test exact course code match with suffixes
+    assert check_is_mandatory("STR544-PBM", "Business Consulting", "3", mandatory_data) is True
+    # Test substring course code match (e.g., BS (STR520-PBM))
+    assert check_is_mandatory("BS (STR520-PBM)", "Business & Society", "3", mandatory_data) is True
+    # Test mismatching session
+    assert check_is_mandatory("BS (STR520-PBM)", "Business & Society", "5", mandatory_data) is False
+    # Test raw course_code check
+    assert check_is_mandatory("SomePrefix STR544-PDM", "Business Consulting", "4", mandatory_data) is True

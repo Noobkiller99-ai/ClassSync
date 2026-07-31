@@ -1105,6 +1105,12 @@ html[data-theme="light"] .mandatory-pill {
   background: rgba(220, 38, 38, 0.08);
 }
 
+html[data-theme="light"] .mandatory-badge {
+  color: #b91c1c;
+  background: rgba(220, 38, 38, 0.08);
+  border-color: rgba(220, 38, 38, 0.2);
+}
+
 html[data-theme="light"] .empty-repo-text {
   color: #64748b;
 }

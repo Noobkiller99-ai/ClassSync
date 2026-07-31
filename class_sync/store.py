@@ -276,8 +276,8 @@ def check_is_mandatory(
 
         outline_code_clean = outline_code.strip().upper()
 
-        # Match 1: Course code matches directly
-        if code_clean and code_clean == outline_code_clean:
+        # Match 1: Course code matches directly or contains the outline code
+        if code_clean and (code_clean == outline_code_clean or outline_code_clean in code_clean):
             return True
 
         # Match 2: Course code appears in subject_name
@@ -288,6 +288,10 @@ def check_is_mandatory(
         if outline_name:
             if outline_name == subject_clean or outline_name in subject_clean or subject_clean in outline_name:
                 return True
+
+        # Match 4: Outline course code appears in the raw course_code
+        if outline_code_clean and outline_code_clean in (course_code or "").upper():
+            return True
 
     return False
 
