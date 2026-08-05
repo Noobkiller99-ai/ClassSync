@@ -134,6 +134,16 @@ def create_app(test_config: dict | None = None) -> Flask:
 
         # Dynamically apply/re-apply mandatory flags to preview events on page load
         if events_raw:
+            synced_event_ids = {}
+            try:
+                from .store import connect, _execute
+                with connect(db) as conn:
+                    rows = _execute(conn, "SELECT uid, synced_event_id FROM timetable_events WHERE user_token = ?", (tok,)).fetchall()
+                    for r in rows:
+                        synced_event_ids[r["uid"]] = r["synced_event_id"]
+            except Exception:
+                pass
+
             from .models import TimetableEvent
             timetable_events = []
             for e in events_raw:
@@ -185,12 +195,14 @@ def create_app(test_config: dict | None = None) -> Flask:
                     "mandatory": ev.mandatory,
                     "session_number": ev.session_number,
                     "activity_name": ev.activity_name,
+                    "synced_event_id": synced_event_ids.get(ev.uid, None),
                 }
                 orig_e = next((o for o in events_raw if o.get("uid") == ev.uid), None)
                 if orig_e and "source" in orig_e:
                     serialized_item["source"] = orig_e["source"]
                 serialized_list.append(serialized_item)
             events_raw = serialized_list
+
 
         synced = bool(
             google_ready

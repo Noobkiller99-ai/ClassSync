@@ -990,6 +990,196 @@ code {
   color: var(--text-muted);
 }
 
+/* ── Split-Screen Dashboard Layout ─────────────────────────── */
+.dashboard-layout {
+  display: grid;
+  grid-template-columns: 300px 1fr;
+  gap: 32px;
+  margin-top: 24px;
+  align-items: start;
+}
+
+.dashboard-sidebar {
+  display: flex;
+  flex-direction: column;
+  gap: 20px;
+}
+
+.dashboard-sidebar .card {
+  padding: 20px 22px;
+  background: var(--surface-1);
+  border: 1px solid var(--border);
+  border-radius: var(--r-lg);
+  box-shadow: var(--sh);
+}
+
+.dashboard-sidebar .card-header {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  margin-bottom: 12px;
+  border-bottom: 1px solid var(--border);
+  padding-bottom: 8px;
+}
+
+.dashboard-sidebar .card-icon {
+  font-size: 16px;
+}
+
+.dashboard-sidebar .card-title {
+  font-size: 13px;
+  font-weight: 700;
+  color: var(--text);
+  text-transform: uppercase;
+  letter-spacing: .5px;
+}
+
+.dashboard-sidebar .card-desc {
+  font-size: 12px;
+  color: var(--text-dim);
+  margin-bottom: 12px;
+  line-height: 1.5;
+}
+
+/* Sync card details */
+.sync-status-details {
+  margin-bottom: 14px;
+}
+.status-badge {
+  display: inline-flex;
+  align-items: center;
+  padding: 4px 10px;
+  border-radius: 999px;
+  font-size: 11px;
+  font-weight: 700;
+  margin-bottom: 8px;
+}
+.status-badge.synced {
+  background: var(--success-bg);
+  color: #34d399;
+  border: 1px solid rgba(16,185,129,.2);
+}
+.status-badge.pending {
+  background: var(--warning-bg);
+  color: #fbbf24;
+  border: 1px solid rgba(245,158,11,.2);
+}
+.status-message {
+  font-size: 12px;
+  color: var(--text-dim);
+  line-height: 1.45;
+  margin-bottom: 6px;
+}
+.account-email {
+  font-size: 11px;
+  color: var(--text-muted);
+  font-family: monospace;
+  word-break: break-all;
+}
+
+/* ── Weekly Calendar Grid ────────────────────────────────── */
+.weekly-calendar-grid {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(240px, 1fr));
+  gap: 16px;
+  align-items: start;
+}
+
+.calendar-column {
+  background: rgba(255, 255, 255, 0.01);
+  border: 1px solid var(--border);
+  border-radius: var(--r-lg);
+  padding: 16px;
+  display: flex;
+  flex-direction: column;
+  gap: 12px;
+  transition: var(--ease);
+}
+
+.calendar-column.is-today {
+  background: rgba(34, 211, 238, 0.02);
+  border-color: var(--border-act);
+}
+
+.column-header {
+  border-bottom: 1px solid var(--border);
+  padding-bottom: 8px;
+  margin-bottom: 2px;
+}
+
+.column-header time {
+  font-size: 12px;
+  font-weight: 700;
+  letter-spacing: 0.5px;
+  text-transform: uppercase;
+  color: var(--text-dim);
+}
+
+.calendar-column.is-today .column-header time {
+  color: var(--accent);
+}
+
+.column-events {
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+}
+
+/* Event cards */
+.event-card-header {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  margin-bottom: 8px;
+}
+
+.event-time-range {
+  font-size: 11px;
+  font-weight: 700;
+  color: var(--text-muted);
+}
+
+.sync-indicator {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 18px;
+  height: 18px;
+  border-radius: 50%;
+  transition: var(--ease);
+}
+
+.sync-indicator.synced {
+  color: var(--success);
+}
+
+.sync-indicator.unsynced {
+  color: var(--text-muted);
+}
+
+/* Evaluation card — orange left border + glow */
+.event-card.evaluation-card {
+  border-left-color: var(--warning) !important;
+  background: linear-gradient(135deg, rgba(245,158,11,.05) 0%, var(--surface-1) 40%);
+  box-shadow: -3px 0 16px rgba(245,158,11,.15);
+}
+
+.event-card.evaluation-card .event-title {
+  color: var(--warning) !important;
+}
+
+.event-card.evaluation-card:hover {
+  box-shadow: -3px 0 24px rgba(245,158,11,.25), 0 10px 36px rgba(0,0,0,.32);
+}
+
+@media (max-width: 900px) {
+  .dashboard-layout {
+    grid-template-columns: 1fr;
+    gap: 24px;
+  }
+}
+
+
 /* ============================================================
    Class Sync — Premium Light Theme Overrides
    ============================================================ */
@@ -1171,3 +1361,26 @@ html[data-theme="light"] .quote-container {
 .theme-toggle-btn svg {
   display: block;
 }
+
+/* ── Light Mode overrides for the new dashboard elements ── */
+html[data-theme="light"] .status-badge.synced {
+  background: rgba(5, 150, 105, 0.08);
+  color: #047857;
+  border-color: rgba(5, 150, 105, 0.2);
+}
+html[data-theme="light"] .status-badge.pending {
+  background: rgba(217, 119, 6, 0.08);
+  color: #b45309;
+  border-color: rgba(217, 119, 6, 0.2);
+}
+html[data-theme="light"] .calendar-column {
+  background: #ffffff;
+}
+html[data-theme="light"] .calendar-column.is-today {
+  background: rgba(8, 145, 178, 0.03);
+}
+html[data-theme="light"] .event-card.evaluation-card {
+  background: rgba(217, 119, 6, 0.02);
+  border-left-color: var(--warning) !important;
+}
+

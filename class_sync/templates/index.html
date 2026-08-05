@@ -378,313 +378,279 @@
     ═══════════════════════════════════════════════════════════ #}
     {% else %}
 
-      <!-- Dashboard header -->
-      <div class="dash-header">
-        <div>
-          <h1 class="dash-title">
-            {% if spp_ready %}☁ Salesforce Timetable{% else %}Your Timetable{% endif %}
-          </h1>
-          <p class="dash-sub">
-            {{ events | length }} event{{ 's' if events | length != 1 else '' }} · next 2 weeks
-          </p>
-        </div>
-        <div class="dash-actions">
-          {% if spp_ready %}
-            <!-- SPP Refresh — requires password re-entry -->
-            <button type="button" class="btn btn-ghost" id="refreshBtn" onclick="openRefreshModal()">
-              <span class="btn-label">↻ Refresh</span>
-            </button>
-            <form method="post" action="{{ url_for('spp_reset') }}"
-                  onsubmit="return confirm('Disconnect Salesforce and clear your session?')">
-              <button type="submit" class="btn btn-danger btn-sm">Disconnect</button>
-            </form>
-          {% else %}
-            <form method="post" action="{{ url_for('preview') }}" onsubmit="startLoading(this, 'Refreshing timetable…')">
-              <button type="submit" class="btn btn-ghost" id="refreshBtn">
-                <span class="btn-label">↻ Refresh</span>
-              </button>
-            </form>
-            <form method="post" action="{{ url_for('tcs_reset') }}"
-                  onsubmit="return confirm('Sign out and clear your session?')">
-              <button type="submit" class="btn btn-danger btn-sm">Sign out</button>
-            </form>
-          {% endif %}
-        </div>
-      </div>
-
-      {% if spp_ready and spp_user_info %}
-        <!-- SPP Student Info Card -->
-        <div class="spp-info-card">
-          <div class="spp-info-row">
-            <span class="spp-info-label">Name</span>
-            <span class="spp-info-value">{{ spp_user_info.get('fullName', '—') }}</span>
-          </div>
-          <div class="spp-info-row">
-            <span class="spp-info-label">Programme</span>
-            <span class="spp-info-value">{{ spp_user_info.get('programCode', '—') }}</span>
-          </div>
-          <div class="spp-info-row">
-            <span class="spp-info-label">Batch</span>
-            <span class="spp-info-value">{{ spp_user_info.get('batchName', '—') }}</span>
-          </div>
-          <div class="spp-info-row">
-            <span class="spp-info-label">Email</span>
-            <span class="spp-info-value" style="font-size:.78rem">{{ spp_user_info.get('email', '—') }}</span>
-          </div>
-          {% if spp_user_info.get('courseCount') %}
-            <div class="spp-info-row">
-              <span class="spp-info-label">Core Courses</span>
-              <span class="spp-info-value">{{ spp_user_info.get('courseCount', {}).get('Core', '—') }}</span>
+      <div class="dashboard-layout">
+        
+        <!-- Left Panel: Sidebar control stack -->
+        <aside class="dashboard-sidebar">
+          
+          <!-- 1. Google Calendar Sync Card -->
+          <div class="card sync-card {{ 'done' if synced else '' }}">
+            <div class="card-header">
+              <span class="card-icon">📅</span>
+              <strong class="card-title">Google Calendar</strong>
             </div>
-            <div class="spp-info-row">
-              <span class="spp-info-label">Elective Courses</span>
-              <span class="spp-info-value">{{ spp_user_info.get('courseCount', {}).get('Elective', '—') }}</span>
-            </div>
-          {% endif %}
-        </div>
-      {% endif %}
-
-      <!-- Sync banner -->
-      {% if events %}
-        {% if synced %}
-          <div class="sync-banner done" role="status">
-            <div class="sync-banner-info">
-              <strong>Calendar synced ✓</strong>
-              <span>Your classes are live in Google Calendar. Refresh to push updates.</span>
-              {% if google_email %}
-                <span style="font-size:0.78rem;color:#6b7280;margin-top:2px;display:block;">Connected as {{ google_email }}</span>
-              {% endif %}
-            </div>
-            <form method="post" action="{{ url_for('sync') }}"
-                  onsubmit="startLoading(this, 'Re-syncing calendar…')">
-              <button type="submit" class="btn btn-google btn-sm" id="resyncBtn">
-                <svg width="16" height="16" viewBox="0 0 24 24" fill="none" aria-hidden="true">
-                  <path d="M22.56 12.25c0-.78-.07-1.53-.2-2.25H12v4.26h5.92c-.26 1.37-1.04 2.53-2.21 3.31v2.77h3.57c2.08-1.92 3.28-4.74 3.28-8.09z" fill="#4285F4"/>
-                  <path d="M12 23c2.97 0 5.46-.98 7.28-2.66l-3.57-2.77c-.98.66-2.23 1.06-3.71 1.06-2.86 0-5.29-1.93-6.16-4.53H2.18v2.84C3.99 20.53 7.7 23 12 23z" fill="#34A853"/>
-                  <path d="M5.84 14.09c-.22-.66-.35-1.36-.35-2.09s.13-1.43.35-2.09V7.07H2.18C1.43 8.55 1 10.22 1 12s.43 3.45 1.18 4.93l3.66-2.84z" fill="#FBBC05"/>
-                  <path d="M12 5.38c1.62 0 3.06.56 4.21 1.64l3.15-3.15C17.45 2.09 14.97 1 12 1 7.7 1 3.99 3.47 2.18 7.07l3.66 2.84c.87-2.6 3.3-4.53 6.16-4.53z" fill="#EA4335"/>
-                </svg>
-                <span class="btn-label">↺ Re-sync Calendar</span>
-              </button>
-            </form>
-          </div>
-        {% else %}
-          {# ── Sync with Google Calendar banner ─────────────────────────────── #}
-          <div class="sync-banner" role="complementary">
-            <div class="sync-banner-info">
-              {% if google_ready %}
-                <strong>Sync with Google Calendar</strong>
-                <span>{{ events | length }} events will be updated in your Google Calendar.</span>
-                {% if google_email %}
-                  <span style="font-size:0.78rem;color:#6b7280;margin-top:2px;display:block;">Connected as {{ google_email }}</span>
-                {% endif %}
+            
+            <div class="sync-status-details">
+              {% if synced %}
+                <span class="status-badge synced">Connected &amp; Synced</span>
+                <p class="status-message">Your classes are automatically synced to Google Calendar.</p>
               {% else %}
-                <strong>Ready to sync with Google Calendar</strong>
-                <span>{{ events | length }} events will be added to your personal Google Calendar.</span>
+                <span class="status-badge pending">Sync Pending</span>
+                <p class="status-message">Link your calendar to keep your classes automatically synced.</p>
+              {% endif %}
+              
+              {% if google_email %}
+                <div class="account-email" title="{{ google_email }}">Active: {{ google_email }}</div>
               {% endif %}
             </div>
-            <form method="post" action="{{ url_for('sync') }}"
-                  onsubmit="startLoading(this, '{% if google_ready %}Syncing calendar…{% else %}Redirecting to Google sign-in…{% endif %}')">
-              <button type="submit" class="btn btn-google" id="syncBtn">
-                <svg width="18" height="18" viewBox="0 0 24 24" fill="none" aria-hidden="true">
-                  <path d="M22.56 12.25c0-.78-.07-1.53-.2-2.25H12v4.26h5.92c-.26 1.37-1.04 2.53-2.21 3.31v2.77h3.57c2.08-1.92 3.28-4.74 3.28-8.09z" fill="#4285F4"/>
-                  <path d="M12 23c2.97 0 5.46-.98 7.28-2.66l-3.57-2.77c-.98.66-2.23 1.06-3.71 1.06-2.86 0-5.29-1.93-6.16-4.53H2.18v2.84C3.99 20.53 7.7 23 12 23z" fill="#34A853"/>
-                  <path d="M5.84 14.09c-.22-.66-.35-1.36-.35-2.09s.13-1.43.35-2.09V7.07H2.18C1.43 8.55 1 10.22 1 12s.43 3.45 1.18 4.93l3.66-2.84z" fill="#FBBC05"/>
-                  <path d="M12 5.38c1.62 0 3.06.56 4.21 1.64l3.15-3.15C17.45 2.09 14.97 1 12 1 7.7 1 3.99 3.47 2.18 7.07l3.66 2.84c.87-2.6 3.3-4.53 6.16-4.53z" fill="#EA4335"/>
-                </svg>
-                {% if google_ready %}
-                  <span class="btn-label">↺ Sync Calendar</span>
-                {% else %}
-                  <span class="btn-label">Sign in with Google &amp; Sync Calendar</span>
-                {% endif %}
-              </button>
-            </form>
-          </div>
-        {% endif %}
-      {% endif %}
-
-      <div class="wisenet-panel">
-        <div class="wisenet-panel-header">
-          <div class="wisenet-panel-info">
-            <div class="wisenet-icon">📚</div>
-            <div>
-              <div class="wisenet-title">Mandatory Sessions</div>
-              <div class="wisenet-sub">
-                {% if mandatory_data %}
-                  {% set total_mandatory = mandatory_data.values() | map('length') | sum %}
-                  {{ total_mandatory }} mandatory session{{ 's' if total_mandatory != 1 }} across {{ mandatory_data | length }} course{{ 's' if mandatory_data | length != 1 }}
-                {% else %}
-                  Upload Course Outline PDFs to automatically identify mandatory sessions
-                {% endif %}
-              </div>
-            </div>
-          </div>
-        </div>
-
-        {# How-it-works panel #}
-        <div class="wisenet-how">
-          <div class="wisenet-how-step">
-            <span class="wisenet-step-num">1</span>
-            <span>Obtain the Course Outline PDF(s) for your current term's courses.</span>
-          </div>
-          <div class="wisenet-how-step">
-            <span class="wisenet-step-num">2</span>
-            <span>Upload the files using the drag-and-drop zone below.</span>
-          </div>
-          <div class="wisenet-how-step">
-            <span class="wisenet-step-num">3</span>
-            <span>Mandatory sessions are extracted and highlighted globally in red for all students.</span>
-          </div>
-        </div>
-
-        {# Always show PDF upload area #}
-        <div class="wisenet-upload-zone" id="wisenetUploadZone">
-          <form id="pdfUploadForm" method="post" action="{{ url_for('wisenet_upload') }}" enctype="multipart/form-data">
-            <div class="upload-box" onclick="document.getElementById('pdfFileInput').click()">
-              <span class="upload-icon">📄</span>
-              <span class="upload-text"><strong>Upload Course Outline PDF(s)</strong></span>
-              <span class="upload-sub">Drag and drop Course Outline PDFs here, or click to browse files</span>
-              <input type="file" id="pdfFileInput" name="pdf_files" accept=".pdf" multiple style="display:none" onchange="submitPdfUpload(this)">
-            </div>
-          </form>
-        </div>
-
-
-        <div class="mandatory-breakdown">
-          <div class="mandatory-breakdown-title">
-            📦 Centrally Synced Outlines
-            {% if batch and batch != 'general' %}
-              (Available for {{ batch.upper() }} Students)
-            {% else %}
-              (Available for All Students)
+            
+            {% if events %}
+              <form method="post" action="{{ url_for('sync') }}"
+                    onsubmit="startLoading(this, '{% if google_ready %}Syncing calendar…{% else %}Redirecting to Google sign-in…{% endif %}')">
+                <button type="submit" class="btn btn-google">
+                  <svg width="16" height="16" viewBox="0 0 24 24" fill="none" aria-hidden="true" style="margin-right: 4px;">
+                    <path d="M22.56 12.25c0-.78-.07-1.53-.2-2.25H12v4.26h5.92c-.26 1.37-1.04 2.53-2.21 3.31v2.77h3.57c2.08-1.92 3.28-4.74 3.28-8.09z" fill="#4285F4"/>
+                    <path d="M12 23c2.97 0 5.46-.98 7.28-2.66l-3.57-2.77c-.98.66-2.23 1.06-3.71 1.06-2.86 0-5.29-1.93-6.16-4.53H2.18v2.84C3.99 20.53 7.7 23 12 23z" fill="#34A853"/>
+                    <path d="M5.84 14.09c-.22-.66-.35-1.36-.35-2.09s.13-1.43.35-2.09V7.07H2.18C1.43 8.55 1 10.22 1 12s.43 3.45 1.18 4.93l3.66-2.84z" fill="#FBBC05"/>
+                    <path d="M12 5.38c1.62 0 3.06.56 4.21 1.64l3.15-3.15C17.45 2.09 14.97 1 12 1 7.7 1 3.99 3.47 2.18 7.07l3.66 2.84c.87-2.6 3.3-4.53 6.16-4.53z" fill="#EA4335"/>
+                  </svg>
+                  <span class="btn-label">
+                    {% if synced %}
+                      ↺ Re-sync Calendar
+                    {% elif google_ready %}
+                      Sync Calendar
+                    {% else %}
+                      Sign in &amp; Sync
+                    {% endif %}
+                  </span>
+                </button>
+              </form>
             {% endif %}
           </div>
-          {% if mandatory_data %}
-            {% for code, data in mandatory_data.items() %}
-              {% set sessions = data.sessions if data is mapping else data %}
-              {% set course_name = data.course_name if data is mapping else '' %}
-              <div class="mandatory-course-row">
-                <div style="display:flex; align-items:center; gap:8px; flex-wrap:wrap;">
-                  <span class="mandatory-code">{{ code }}</span>
-                  {% if course_name %}
-                    <span class="mandatory-name" style="font-size:0.85rem; color:var(--text-dim); font-weight:500;">· {{ course_name }}</span>
-                  {% endif %}
+          
+          <!-- 2. Syllabus Outline Drag-and-Drop Uploader -->
+          <div class="card upload-card">
+            <div class="card-header">
+              <span class="card-icon">📄</span>
+              <strong class="card-title">Upload Syllabus</strong>
+            </div>
+            <p class="card-desc">Parse course outline PDFs to identify mandatory sessions for everyone.</p>
+            
+            <div class="wisenet-upload-zone" id="wisenetUploadZone">
+              <form id="pdfUploadForm" method="post" action="{{ url_for('wisenet_upload') }}" enctype="multipart/form-data">
+                <div class="upload-box" onclick="document.getElementById('pdfFileInput').click()">
+                  <span class="upload-icon">📄</span>
+                  <span class="upload-text"><strong>Drag PDF here</strong></span>
+                  <span class="upload-sub">or click to browse files</span>
+                  <input type="file" id="pdfFileInput" name="pdf_files" accept=".pdf" multiple style="display:none" onchange="submitPdfUpload(this)">
                 </div>
-                <span class="mandatory-sessions">
-                  {% if sessions %}
-                    {% for s in sessions %}
-                      <span class="mandatory-badge">Session {{ s }}</span>
-                    {% endfor %}
-                  {% else %}
-                    <span class="mandatory-no-sessions">No mandatory sessions found</span>
-                  {% endif %}
-                </span>
+              </form>
+            </div>
+          </div>
+          
+          <!-- 3. Centrally Synced Outlines List -->
+          <div class="card outlines-card">
+            <div class="card-header">
+              <span class="card-icon">📦</span>
+              <strong class="card-title">
+                Mandatory List
+                {% if batch and batch != 'general' %}
+                  ({{ batch.upper() }})
+                {% endif %}
+              </strong>
+            </div>
+            
+            <div class="mandatory-breakdown" style="border-top: none; padding: 0;">
+              {% if mandatory_data %}
+                {% for code, data in mandatory_data.items() %}
+                  {% set sessions = data.sessions if data is mapping else data %}
+                  {% set course_name = data.course_name if data is mapping else '' %}
+                  <div class="mandatory-course-row" style="padding-bottom: 8px; margin-bottom: 8px; border-bottom: 1px solid var(--border); display: flex; flex-direction: column; gap: 4px; width: 100%;">
+                    <div style="display:flex; flex-direction:column; gap:2px; width: 100%;">
+                      <div style="display:flex; justify-content:space-between; align-items:center;">
+                        <span class="mandatory-code" style="min-width: unset; padding: 2px 6px;">{{ code }}</span>
+                        <span class="mandatory-sessions" style="gap:3px;">
+                          {% if sessions %}
+                            {% for s in sessions %}
+                              <span class="mandatory-badge" style="padding: 1px 6px; font-size: 10px;">S{{ s }}</span>
+                            {% endfor %}
+                          {% else %}
+                            <span class="mandatory-no-sessions">None</span>
+                          {% endif %}
+                        </span>
+                      </div>
+                      {% if course_name %}
+                        <span class="mandatory-name" style="font-size:0.75rem; color:var(--text-dim); font-weight:500; white-space:nowrap; overflow:hidden; text-overflow:ellipsis;" title="{{ course_name }}">{{ course_name }}</span>
+                      {% endif %}
+                    </div>
+                  </div>
+                {% endfor %}
+              {% else %}
+                <p class="empty-repo-text" style="font-size: 0.8rem; text-align: left;">No active outlines uploaded yet. Upload a syllabus PDF to populate session rules.</p>
+              {% endif %}
+            </div>
+          </div>
+          
+          <!-- 4. SPP Student Info Card -->
+          {% if spp_ready and spp_user_info %}
+            <div class="card profile-card">
+              <div class="card-header">
+                <span class="card-icon">👤</span>
+                <strong class="card-title">Student Profile</strong>
               </div>
-            {% endfor %}
-          {% else %}
-            <p class="empty-repo-text">No outlines uploaded yet. Drag-and-drop a PDF below to sync it for everyone!</p>
+              <div class="spp-info-list" style="display: flex; flex-direction: column; gap: 8px; font-size: 12px;">
+                <div style="display: flex; justify-content: space-between;"><span style="color: var(--text-dim);">Name</span><span style="font-weight: 600;">{{ spp_user_info.get('fullName', '—') }}</span></div>
+                <div style="display: flex; justify-content: space-between;"><span style="color: var(--text-dim);">Program</span><span style="font-weight: 600;">{{ spp_user_info.get('programCode', '—') }}</span></div>
+                <div style="display: flex; justify-content: space-between;"><span style="color: var(--text-dim);">Batch</span><span style="font-weight: 600;">{{ spp_user_info.get('batchName', '—') }}</span></div>
+                <div style="display: flex; justify-content: space-between;"><span style="color: var(--text-dim);">Email</span><span style="font-weight: 600; font-size: 11px;">{{ spp_user_info.get('email', '—') }}</span></div>
+              </div>
+            </div>
           {% endif %}
-        </div>
+          
+          <!-- 5. Admin strip panel -->
+          {% if admin_enabled %}
+            <div class="card admin-card">
+              <div class="card-header">
+                <span class="card-icon">⚙️</span>
+                <strong class="card-title">Admin Console</strong>
+              </div>
+              <form method="post" action="{{ url_for('admin_refresh') }}"
+                    onsubmit="startLoading(this, 'Running admin refresh…')">
+                <div class="form-field" style="margin-bottom: 8px;">
+                  <label for="admin_token" style="font-size: 11px;">Token</label>
+                  <input
+                    id="admin_token"
+                    name="admin_token"
+                    type="password"
+                    autocomplete="off"
+                    placeholder="Admin password"
+                    style="padding: 8px 10px; font-size: 13px;"
+                  >
+                </div>
+                <button type="submit" class="btn btn-ghost btn-sm" style="width: 100%;">Run Refresh</button>
+              </form>
+            </div>
+          {% endif %}
+          
+        </aside>
+        
+        <!-- Right Panel: Calendar view -->
+        <main class="dashboard-main">
+          
+          <!-- Dashboard Header -->
+          <div class="dash-header">
+            <div>
+              <h1 class="dash-title">
+                {% if spp_ready %}☁ Salesforce Timetable{% else %}Your Timetable{% endif %}
+              </h1>
+              <p class="dash-sub">
+                {{ events | length }} event{{ 's' if events | length != 1 else '' }} · next 2 weeks
+              </p>
+            </div>
+            <div class="dash-actions">
+              {% if spp_ready %}
+                <button type="button" class="btn btn-ghost" id="refreshBtn" onclick="openRefreshModal()">
+                  <span class="btn-label">↻ Refresh</span>
+                </button>
+                <form method="post" action="{{ url_for('spp_reset') }}"
+                      onsubmit="return confirm('Disconnect Salesforce and clear your session?')">
+                  <button type="submit" class="btn btn-danger btn-sm">Disconnect</button>
+                </form>
+              {% else %}
+                <form method="post" action="{{ url_for('preview') }}" onsubmit="startLoading(this, 'Refreshing timetable…')">
+                  <button type="submit" class="btn btn-ghost" id="refreshBtn">
+                    <span class="btn-label">↻ Refresh</span>
+                  </button>
+                </form>
+                <form method="post" action="{{ url_for('tcs_reset') }}"
+                      onsubmit="return confirm('Sign out and clear your session?')">
+                  <button type="submit" class="btn btn-danger btn-sm">Sign out</button>
+                </form>
+              {% endif %}
+            </div>
+          </div>
+          
+          <!-- Timetable View -->
+          {% if event_groups %}
+            <div class="weekly-calendar-grid">
+              {% set chip_colors = [
+                '#22d3ee','#3b82f6','#8b5cf6','#10b981',
+                '#f59e0b','#ec4899','#14b8a6','#f97316'
+              ] %}
+              {% for group in event_groups %}
+                <section class="calendar-column {{ 'is-today' if group.is_today else '' }}" aria-label="{{ group.label }}">
+                  <div class="column-header">
+                    <time datetime="{{ group.date }}">{{ group.label }}</time>
+                  </div>
+                  <div class="column-events">
+                    {% for event in group.events %}
+                      {% set cidx = ((event.title | length) + (event.course_code | length)) % (chip_colors | length) %}
+                      {% set is_eval = "EVALUATION" in event.title or "Exam" in event.title or "exam" in event.title or "Evaluation" in event.title %}
+                      
+                      <article class="event-card {{ 'mandatory-card' if event.mandatory else '' }} {{ 'evaluation-card' if is_eval else '' }}" style="--chip: {{ chip_colors[cidx] }}">
+                        <div class="event-card-header">
+                          <span class="event-time-range">{{ event.starts_at[11:16] }} – {{ event.ends_at[11:16] }}</span>
+                          
+                          <!-- Sync indicator icon -->
+                          {% if google_ready and event.synced_event_id %}
+                            <span class="sync-indicator synced" title="Synced to Google Calendar">
+                              <svg xmlns="http://www.w3.org/2000/svg" width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="3" stroke-linecap="round" stroke-linejoin="round"><path d="M20 6L9 17l-5-5"/></svg>
+                            </span>
+                          {% else %}
+                            <span class="sync-indicator unsynced" title="Not synced to Google Calendar">
+                              <svg xmlns="http://www.w3.org/2000/svg" width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round" stroke-dasharray="3 3"><path d="M12 2v2M12 20v2M4.93 4.93l1.41 1.41M17.66 17.66l1.41 1.41M2 12h2M20 12h2M6.34 17.66l-1.41 1.41M19.07 4.93l-1.41 1.41"/></svg>
+                            </span>
+                          {% endif %}
+                        </div>
+                        
+                        <div class="event-title">
+                          {{ event.title }}
+                        </div>
+                        
+                        <div class="event-meta">
+                          {% if event.classroom %}
+                            <div class="meta-row">
+                              <span class="meta-key">Room</span>
+                              <span class="meta-val">{{ event.classroom }}</span>
+                            </div>
+                          {% endif %}
+                          {% if event.faculty %}
+                            <div class="meta-row">
+                              <span class="meta-key">Faculty</span>
+                              <span class="meta-val">{{ event.faculty }}</span>
+                            </div>
+                          {% endif %}
+                          {% if event.course_code %}
+                            <div class="meta-row">
+                              <span class="meta-key">Code</span>
+                              <span class="meta-val">{{ event.course_code }}</span>
+                            </div>
+                          {% endif %}
+                        </div>
+                      </article>
+                    {% endfor %}
+                  </div>
+                </section>
+              {% endfor %}
+            </div>
+          {% else %}
+            <div class="empty" role="status">
+              <div class="empty-icon">📅</div>
+              <h2>No classes in the next 2 weeks</h2>
+              <p>
+                {% if spp_ready %}
+                  Your Salesforce SPP timetable shows no scheduled sessions for this period.
+                {% else %}
+                  Your TCS iON timetable shows no scheduled sessions for this period.
+                {% endif %}
+              </p>
+            </div>
+          {% endif %}
+          
+        </main>
+        
       </div>
 
-      <!-- Timetable -->
-      {% if event_groups %}
-        <div class="timetable">
-          {% set chip_colors = [
-            '#22d3ee','#3b82f6','#8b5cf6','#10b981',
-            '#f59e0b','#ec4899','#14b8a6','#f97316'
-          ] %}
-          {% for group in event_groups %}
-            <section class="day-group" aria-label="{{ group.label }}">
-              <div class="day-heading {{ 'is-today' if group.is_today else '' }}">
-                <time datetime="{{ group.date }}">{{ group.label }}</time>
-              </div>
-              <div class="events-grid">
-                {% for event in group.events %}
-                  {# Pick a stable colour index based on subject name length + code length #}
-                  {% set cidx = ((event.title | length) + (event.course_code | length)) % (chip_colors | length) %}
-                  <article class="event-card {{ 'mandatory-card' if event.mandatory else '' }}" style="--chip: {{ chip_colors[cidx] }}">
-                    <div class="event-time">
-                      <span>{{ event.starts_at[11:16] }} – {{ event.ends_at[11:16] }}</span>
-                      {% if event.session_number %}
-                        <span class="session-badge" style="float: right; font-size: 0.75rem; background: rgba(255,255,255,0.08); padding: 2px 8px; border-radius: 12px; color: var(--text-dim); font-weight: 600;">Session {{ event.session_number }}</span>
-                      {% endif %}
-                    </div>
-                    <div class="event-title">
-                      {{ event.title }}
-                      {% if event.mandatory %}
-                        <span class="mandatory-pill">🔴 Mandatory</span>
-                      {% endif %}
-                    </div>
-                    <div class="event-meta">
-                      {% if event.session_number %}
-                        <div class="meta-row">
-                          <span class="meta-key">Session</span>
-                          <span class="meta-val">Session {{ event.session_number }}</span>
-                        </div>
-                      {% endif %}
-                      {% if event.faculty %}
-                        <div class="meta-row">
-                          <span class="meta-key">Faculty</span>
-                          <span class="meta-val">{{ event.faculty }}</span>
-                        </div>
-                      {% endif %}
-                      {% if event.course_code %}
-                        <div class="meta-row">
-                          <span class="meta-key">Code</span>
-                          <span class="meta-val">{{ event.course_code }}</span>
-                        </div>
-                      {% endif %}
-                      {% if event.classroom %}
-                        <div class="meta-row">
-                          <span class="meta-key">Room</span>
-                          <span class="meta-val">{{ event.classroom }}</span>
-                        </div>
-                      {% endif %}
-                    </div>
-                  </article>
-                {% endfor %}
-              </div>
-            </section>
-          {% endfor %}
-        </div>
-
-      {% else %}
-        <div class="empty" role="status">
-          <div class="empty-icon">📅</div>
-          <h2>No classes in the next 2 weeks</h2>
-          <p>
-            {% if spp_ready %}
-              Your Salesforce SPP timetable shows no scheduled sessions for this period.
-            {% else %}
-              Your TCS iON timetable shows no scheduled sessions for this period.
-            {% endif %}
-          </p>
-        </div>
-      {% endif %}
-
-      <!-- Admin strip -->
-      {% if admin_enabled %}
-        <div class="admin-strip" aria-label="Admin controls">
-          <p class="admin-label">⚙ Admin</p>
-          <form method="post" action="{{ url_for('admin_refresh') }}"
-                onsubmit="startLoading(this, 'Running admin refresh…')">
-            <div class="admin-row">
-              <div class="form-field">
-                <label for="admin_token">Admin Token</label>
-                <input
-                  id="admin_token"
-                  name="admin_token"
-                  type="password"
-                  autocomplete="off"
-                  placeholder="Enter admin token"
-                >
-              </div>
-              <button type="submit" class="btn btn-ghost btn-sm">Run Refresh</button>
-            </div>
-          </form>
-        </div>
-      {% endif %}
 
     {% endif %}
     <!-- end steps -->
