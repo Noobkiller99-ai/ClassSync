@@ -571,23 +571,62 @@
           </div>
           
           <!-- Timetable View -->
-          {% if event_groups %}
-            <div class="weekly-calendar-grid">
+          {% if weeks %}
+            <div class="weekly-calendar-grid" style="display:block; border:none; background:none; box-shadow:none; padding:0;">
+              
+              <!-- Week tabs selector -->
+              {% if weeks | length > 1 %}
+                <div class="calendar-tabs">
+                  {% for week in weeks %}
+                    <button class="calendar-tab {{ 'active' if loop.first else '' }}" data-week="{{ week.week_num }}" onclick="switchCalendarWeek('{{ week.week_num }}')">
+                      {{ week.label }}
+                    </button>
+                  {% endfor %}
+                </div>
+              {% endif %}
+              
+              <!-- Week panes -->
               {% set chip_colors = [
                 '#22d3ee','#3b82f6','#8b5cf6','#10b981',
                 '#f59e0b','#ec4899','#14b8a6','#f97316'
               ] %}
-              {% for group in event_groups %}
-                <section class="calendar-column {{ 'is-today' if group.is_today else '' }}" aria-label="{{ group.label }}">
-                  <div class="column-header">
-                    <time datetime="{{ group.date }}">{{ group.label }}</time>
-                  </div>
-                  <div class="column-events">
-                    {% for event in group.events %}
+              {% for week in weeks %}
+                <div class="calendar-grid-wrapper week-pane {{ 'active' if loop.first else '' }}" data-week="{{ week.week_num }}">
+                  <div class="calendar-grid">
+                    
+                    <!-- Time label header cell -->
+                    <div class="calendar-header-cell time-col" style="grid-row: 1; grid-column: 1;">Time</div>
+                    
+                    <!-- Day header cells -->
+                    {% for header in week.column_headers %}
+                      <div class="calendar-header-cell" style="grid-row: 1; grid-column: {{ loop.index + 1 }};">
+                        <div class="day-name">{{ header.day_name }}</div>
+                        <div class="day-date">{{ header.date_label }}</div>
+                      </div>
+                    {% endfor %}
+                    
+                    <!-- Time label row cells -->
+                    <div class="calendar-time-cell" style="grid-row: 2; grid-column: 1;">09:00-10:10</div>
+                    <div class="calendar-time-cell" style="grid-row: 3; grid-column: 1;">10:40-11:50</div>
+                    <div class="calendar-time-cell" style="grid-row: 4; grid-column: 1;">12:10-13:20</div>
+                    <div class="calendar-time-cell" style="grid-row: 5; grid-column: 1;">14:30-15:40</div>
+                    <div class="calendar-time-cell" style="grid-row: 6; grid-column: 1;">16:00-17:10</div>
+                    <div class="calendar-time-cell" style="grid-row: 7; grid-column: 1;">17:30-18:40</div>
+                    <div class="calendar-time-cell" style="grid-row: 8; grid-column: 1;">19:00-20:10</div>
+                    
+                    <!-- Background cells -->
+                    {% for row_idx in range(2, 9) %}
+                      {% for col_idx in range(2, 8) %}
+                        <div class="calendar-grid-cell" style="grid-row: {{ row_idx }}; grid-column: {{ col_idx }};"></div>
+                      {% endfor %}
+                    {% endfor %}
+                    
+                    <!-- Plot events -->
+                    {% for event in week.events %}
                       {% set cidx = ((event.title | length) + (event.course_code | length)) % (chip_colors | length) %}
                       {% set is_eval = "EVALUATION" in event.title or "Exam" in event.title or "exam" in event.title or "Evaluation" in event.title %}
                       
-                      <article class="event-card {{ 'mandatory-card' if event.mandatory else '' }} {{ 'evaluation-card' if is_eval else '' }}" style="--chip: {{ chip_colors[cidx] }}">
+                      <article class="event-card {{ 'mandatory-card' if event.mandatory else '' }} {{ 'evaluation-card' if is_eval else '' }}" style="grid-row: {{ event.row_idx }}; grid-column: {{ event.col_idx }}; --chip: {{ chip_colors[cidx] }}">
                         <div class="event-card-header">
                           <span class="event-time-range">{{ event.starts_at[11:16] }} – {{ event.ends_at[11:16] }}</span>
                           
@@ -603,35 +642,29 @@
                           {% endif %}
                         </div>
                         
-                        <div class="event-title">
+                        <div class="event-title" title="{{ event.title }}">
                           {{ event.title }}
                         </div>
                         
                         <div class="event-meta">
                           {% if event.classroom %}
                             <div class="meta-row">
-                              <span class="meta-key">Room</span>
                               <span class="meta-val">{{ event.classroom }}</span>
                             </div>
                           {% endif %}
                           {% if event.faculty %}
                             <div class="meta-row">
-                              <span class="meta-key">Faculty</span>
-                              <span class="meta-val">{{ event.faculty }}</span>
-                            </div>
-                          {% endif %}
-                          {% if event.course_code %}
-                            <div class="meta-row">
-                              <span class="meta-key">Code</span>
-                              <span class="meta-val">{{ event.course_code }}</span>
+                              <span class="meta-val" title="{{ event.faculty }}">{{ event.faculty }}</span>
                             </div>
                           {% endif %}
                         </div>
                       </article>
                     {% endfor %}
+                    
                   </div>
-                </section>
+                </div>
               {% endfor %}
+              
             </div>
           {% else %}
             <div class="empty" role="status">
@@ -646,6 +679,7 @@
               </p>
             </div>
           {% endif %}
+
           
         </main>
         
@@ -918,6 +952,21 @@
       var currentTheme = document.documentElement.getAttribute('data-theme') || 'dark';
       updateThemeToggleIcons(currentTheme);
     });
+
+    /* ── Switch Calendar Weeks ──────────────────────────────── */
+    function switchCalendarWeek(weekNum) {
+      document.querySelectorAll('.calendar-tab').forEach(function(btn) {
+        btn.classList.remove('active');
+      });
+      var activeBtn = document.querySelector(`.calendar-tab[data-week="${weekNum}"]`);
+      if (activeBtn) activeBtn.classList.add('active');
+
+      document.querySelectorAll('.week-pane').forEach(function(pane) {
+        pane.classList.remove('active');
+      });
+      var activePane = document.querySelector(`.week-pane[data-week="${weekNum}"]`);
+      if (activePane) activePane.classList.add('active');
+    }
   </script>
 
 </body>

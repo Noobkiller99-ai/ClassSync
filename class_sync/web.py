@@ -237,6 +237,7 @@ def create_app(test_config: dict | None = None) -> Flask:
                 google_email = g_creds.get("email", "")
 
         event_groups = _group_events(events_raw)
+        weeks = _get_calendar_weeks(events_raw)
         return render_template(
             "index.html",
             events=events_raw,
@@ -249,6 +250,7 @@ def create_app(test_config: dict | None = None) -> Flask:
             mandatory_data=mandatory_data,
             is_local=IS_LOCAL,
             event_groups=event_groups,
+            weeks=weeks,
             synced=synced,
             username=username,
             batch=batch,
@@ -256,6 +258,7 @@ def create_app(test_config: dict | None = None) -> Flask:
             admin_enabled=bool(app.config["ADMIN_TOKEN"]),
             google_email=google_email,
         )
+
 
     @app.post("/tcs/login")
     def tcs_login():
@@ -678,6 +681,82 @@ def _group_events(events: list[dict]) -> list[dict]:
             }
         )
     return groups
+
+
+def _get_calendar_weeks(events: list[dict]) -> list[dict]:
+    from datetime import datetime
+    
+    weeks_map = {}
+    for e in events:
+        start_str = e.get("starts_at", "")
+        if not start_str:
+            continue
+        dt = datetime.fromisoformat(start_str)
+        year, week, weekday = dt.isocalendar()
+        
+        week_key = (year, week)
+        if week_key not in weeks_map:
+            weeks_map[week_key] = []
+            
+        # Calculate row index based on start time
+        time_part = start_str[11:16]
+        if time_part == "09:00":
+            row_idx = 2
+        elif time_part == "10:40":
+            row_idx = 3
+        elif time_part == "12:10":
+            row_idx = 4
+        elif time_part == "14:30":
+            row_idx = 5
+        elif time_part == "16:00":
+            row_idx = 6
+        elif time_part == "17:30":
+            row_idx = 7
+        elif time_part == "19:00":
+            row_idx = 8
+        else:
+            row_idx = 2  # fallback
+            
+        col_idx = weekday + 1  # Monday = 1 -> Column 2 (since Column 1 is Time label)
+        
+        e_copy = dict(e)
+        e_copy["col_idx"] = col_idx
+        e_copy["row_idx"] = row_idx
+        
+        weeks_map[week_key].append(e_copy)
+        
+    sorted_week_keys = sorted(weeks_map.keys())
+    
+    weeks = []
+    for key in sorted_week_keys:
+        year, week_num = key
+        week_events = weeks_map[key]
+        
+        # Find start and end dates of the week
+        start_dt = datetime.fromisocalendar(year, week_num, 1)
+        end_dt = datetime.fromisocalendar(year, week_num, 6)
+        
+        label = f"Week {week_num} ({start_dt.strftime('%b %d')} – {end_dt.strftime('%b %d')})"
+        
+        column_headers = []
+        for day_idx in range(1, 7): # Monday to Saturday
+            day_dt = datetime.fromisocalendar(year, week_num, day_idx)
+            column_headers.append({
+                "day_name": day_dt.strftime("%a"),
+                "date_label": day_dt.strftime("%b %d"),
+                "iso_date": day_dt.date().isoformat()
+            })
+            
+        weeks.append({
+            "label": label,
+            "column_headers": column_headers,
+            "events": week_events,
+            "week_num": week_num,
+            "year": year
+        })
+        
+    return weeks
+
 
 
 def _extract_course_code(filename: str, pdf_bytes: bytes) -> str | None:
