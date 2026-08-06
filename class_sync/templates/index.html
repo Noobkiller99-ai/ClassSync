@@ -164,6 +164,7 @@
     </header>
 
     <!-- ── Step indicator ──────────────────────────────────── -->
+    {% if not tcs_ready and not spp_ready %}
     <nav class="steps" aria-label="Setup progress">
       <div class="step {{ 'done' if (tcs_ready or spp_ready) else 'active' }}">
         <div class="step-num" aria-label="Step 1">
@@ -188,6 +189,7 @@
         <span class="step-label">Google Calendar Sync</span>
       </div>
     </nav>
+    {% endif %}
 
     {# ═══════════════════════════════════════════════════════════
        STEP 1 — Login (Source Selector)

@@ -766,6 +766,8 @@ details[open] .setup-summary .chevron { transform: rotate(180deg); }
   border-top: 1px solid rgba(239,68,68,.12);
   padding: 16px 24px;
   display: flex; flex-direction: column; gap: 10px;
+  max-height: 180px;
+  overflow-y: auto;
 }
 
 .mandatory-breakdown-title {
