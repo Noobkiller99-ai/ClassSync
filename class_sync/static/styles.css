@@ -990,11 +990,16 @@ code {
   color: var(--text-muted);
 }
 
+/* Make page wider on dashboard */
+.page:has(.dashboard-layout) {
+  max-width: 1400px;
+}
+
 /* ── Split-Screen Dashboard Layout ─────────────────────────── */
 .dashboard-layout {
   display: grid;
-  grid-template-columns: 300px 1fr;
-  gap: 32px;
+  grid-template-columns: 260px 1fr;
+  gap: 24px;
   margin-top: 24px;
   align-items: start;
 }
@@ -1121,7 +1126,7 @@ code {
 
 .calendar-grid {
   display: grid;
-  grid-template-columns: 90px repeat(6, minmax(130px, 1fr)); /* Time + 6 days */
+  grid-template-columns: 90px repeat(7, minmax(120px, 1fr)); /* Time + 7 days */
   grid-template-rows: 46px repeat(7, minmax(90px, auto)); /* Header + 7 slots */
   gap: 2px;
   background-color: var(--border);

@@ -734,12 +734,12 @@ def _get_calendar_weeks(events: list[dict]) -> list[dict]:
         
         # Find start and end dates of the week
         start_dt = datetime.fromisocalendar(year, week_num, 1)
-        end_dt = datetime.fromisocalendar(year, week_num, 6)
+        end_dt = datetime.fromisocalendar(year, week_num, 7)
         
         label = f"Week {week_num} ({start_dt.strftime('%b %d')} – {end_dt.strftime('%b %d')})"
         
         column_headers = []
-        for day_idx in range(1, 7): # Monday to Saturday
+        for day_idx in range(1, 8): # Monday to Sunday
             day_dt = datetime.fromisocalendar(year, week_num, day_idx)
             column_headers.append({
                 "day_name": day_dt.strftime("%a"),
